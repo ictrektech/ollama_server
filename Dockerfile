@@ -79,9 +79,6 @@ ENV http_proxy= \
     no_proxy= \
     NO_PROXY=
 
-# ✅ 暴露两个服务端口
-EXPOSE 11434
-EXPOSE 11435
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip \
