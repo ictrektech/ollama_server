@@ -44,6 +44,7 @@ rds = redis.Redis(
     decode_responses=True,
 )
 
+
 app = FastAPI(title="Ollama OpenAI Gateway + Task Status", version=APP_VERSION)
 http_client = httpx.AsyncClient(timeout=None)
 
