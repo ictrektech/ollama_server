@@ -388,17 +388,37 @@ done
 
 case "$PROFILE" in
   Dockerfile)
-    PROFILE_TAG="${ARCH_TAG}"
+    if [[ "$P" == "l4t" ]]; then
+      PROFILE_TAG="arm"
+    else
+      PROFILE_TAG="${P}"
+    fi
     ;;
-  Dockerfile_cu124)
-    PROFILE_TAG="${ARCH_TAG}_cu124"
-    ;;
-  Dockerfile_cu128)
-    PROFILE_TAG="${ARCH_TAG}_cu128"
-    ;;
+
   Dockerfile_l4t)
-    PROFILE_TAG="${ARCH_TAG}_l4t"
+    if [[ "$P" == "l4t" ]]; then
+      PROFILE_TAG="l4t"
+    else
+      PROFILE_TAG="${P}_l4t"
+    fi
     ;;
+
+  Dockerfile_cu124)
+    if [[ "$P" == "amd" ]]; then
+      PROFILE_TAG="amd_cu124"
+    else
+      PROFILE_TAG="${P}_cu124"
+    fi
+    ;;
+
+  Dockerfile_cu128)
+    if [[ "$P" == "amd" ]]; then
+      PROFILE_TAG="amd_cu128"
+    else
+      PROFILE_TAG="${P}_cu128"
+    fi
+    ;;
+
   *)
     echo "Unsupported profile: $PROFILE"
     exit 1
@@ -444,7 +464,7 @@ DATE=$(date +%Y%m%d)
 OLLAMA_VERSION=$(curl -s https://api.github.com/repos/ollama/ollama/releases/latest \
     | jq -r .tag_name | sed 's/^v//')
 
-TAG=${P}_${OLLAMA_VERSION}
+TAG=${PROFILE_TAG}_${OLLAMA_VERSION}
 IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${IMG_NAME}:${TAG}"
 
 # =========================
