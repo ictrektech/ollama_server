@@ -407,7 +407,7 @@ case "$PROFILE" in
     if [[ "$P" == "amd" ]]; then
       PROFILE_TAG="amd_cu124"
     else
-      PROFILE_TAG="amd_cu124"
+      PROFILE_TAG="arm_cu124"
     fi
     ;;
 
