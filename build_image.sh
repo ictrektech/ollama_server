@@ -407,7 +407,7 @@ case "$PROFILE" in
     if [[ "$P" == "amd" ]]; then
       PROFILE_TAG="amd_cu124"
     else
-      PROFILE_TAG="${P}_cu124"
+      PROFILE_TAG="amd_cu124"
     fi
     ;;
 
@@ -415,7 +415,7 @@ case "$PROFILE" in
     if [[ "$P" == "amd" ]]; then
       PROFILE_TAG="amd_cu128"
     else
-      PROFILE_TAG="${P}_cu128"
+      PROFILE_TAG="arm_cu128"
     fi
     ;;
 
