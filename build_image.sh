@@ -466,8 +466,18 @@ DATE=$(date +%Y%m%d)
 #   echo "No VERSION file found, using default tag format."
 # fi
 
-OLLAMA_VERSION=$(curl -s https://api.github.com/repos/ollama/ollama/releases/latest \
-    | jq -r .tag_name | sed 's/^v//')
+GH_API_URL="https://api.github.com/repos/ollama/ollama/releases/latest"
+OLLAMA_VERSION=$(curl -s --connect-timeout 10 "$GH_API_URL" | jq -r .tag_name | sed 's/^v//')
+if [[ -z "${OLLAMA_VERSION}" ]]; then
+  log "GitHub API unreachable, trying ghfast.top mirror to resolve version..."
+  REDIRECT_URL=$(curl -sL --connect-timeout 10 -o /dev/null -w '%{url_effective}' \
+    "https://ghfast.top/https://github.com/ollama/ollama/releases/latest")
+  OLLAMA_VERSION=$(echo "$REDIRECT_URL" | grep -oP 'tag/\Kv[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//')
+fi
+if [[ -z "${OLLAMA_VERSION}" ]]; then
+  err "Failed to get ollama version from GitHub"
+  exit 1
+fi
 
 TAG=${PROFILE_TAG}_${OLLAMA_VERSION}
 IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${IMG_NAME}:${TAG}"

@@ -15,6 +15,8 @@ RUN chmod 1777 /tmp && apt-get update && apt-get install -y \
 # COPY ollama/ /tmp/
 
 # 通用包（.tar.zst）
+ARG GH_MIRROR=https://ghfast.top
+
 RUN set -eux; \
     URL="https://ollama.com/download/ollama-linux-${ARCH}.tar.zst"; \
     echo "Downloading Ollama tar.zst from ${URL} ..."; \
@@ -29,11 +31,19 @@ RUN set -eux; \
         --no-cache --no-cookies --server-response \
         "$URL" && break; \
       else \
+        REAL_URL=$(wget --spider --server-response "$URL" 2>&1 \
+          | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
+        DL_URL="$URL"; \
+        if echo "$REAL_URL" | grep -q 'github\.com'; then \
+          echo "redirected to github.com: ${REAL_URL}"; \
+          DL_URL="${GH_MIRROR}/${REAL_URL}"; \
+          echo "using github mirror: ${DL_URL}"; \
+        fi; \
         wget -O /tmp/ollama.tar.zst \
         --timeout=30 --tries=3 \
         --retry-on-http-error=429,500,502,503,504 \
         --no-cache --no-cookies --server-response \
-        "$URL" && break; \
+        "$DL_URL" && break; \
       fi; \
       echo "retry $i ..."; sleep 2; \
       rm -f /tmp/ollama.tar.zst; \
@@ -64,11 +74,19 @@ RUN set -eux; \
         --no-cache --no-cookies --server-response \
         "${JURL}" && break; \
       else \
+        JREAL_URL=$(wget --spider --server-response "${JURL}" 2>&1 \
+          | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
+        JDL_URL="${JURL}"; \
+        if echo "$JREAL_URL" | grep -q 'github\.com'; then \
+          echo "redirected to github.com: ${JREAL_URL}"; \
+          JDL_URL="${GH_MIRROR}/${JREAL_URL}"; \
+          echo "using github mirror: ${JDL_URL}"; \
+        fi; \
         wget -O /tmp/ollamaj.tar.zst \
         --timeout=30 --tries=3 \
         --retry-on-http-error=429,500,502,503,504 \
         --no-cache --no-cookies --server-response \
-        "${JURL}" && break; \
+        "${JDL_URL}" && break; \
       fi; \
       echo "retry $i ..."; sleep 2; \
       rm -f /tmp/ollamaj.tar.zst; \
