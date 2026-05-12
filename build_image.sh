@@ -476,7 +476,7 @@ IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${IMG_NAME}:${TAG}"
 # docker build 参数拼装
 # =========================
 DOCKER_BUILD_ARGS=(
-    --build-arg PROXY="$PROXY"
+    --build-arg PROXY="${PROXY:-}"
 )
 
 
