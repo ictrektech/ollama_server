@@ -29,7 +29,7 @@ esac
 declare -A PROFILE_TO_SHEET_TITLE=(
   ["Dockerfile"]="${CUDA_PREFIX}_without_cuda"
   ["Dockerfile_l4t"]="l4t"
-  ["Dockerfile_thor"]="thor"
+  ["Dockerfile_thor"]="thor_spark"
   ["Dockerfile_cu124"]="${CUDA_PREFIX}_with_cuda"
   ["Dockerfile_cu128"]="${CUDA_PREFIX}_with_cuda"
 )
