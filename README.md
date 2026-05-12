@@ -246,6 +246,35 @@ HEARTBEAT_SEC=10
 
 ---
 
+## Build & Deploy
+
+### Dockerfile Profiles
+
+| Profile | Feishu Sheet | Description |
+|---------|-------------|-------------|
+| `Dockerfile` | `ARM_without_cuda` / `AMD_without_cuda` | 基础镜像（无 CUDA） |
+| `Dockerfile_l4t` | `l4t` | Jetson (L4T) 设备 |
+| `Dockerfile_thor` | `thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
+| `Dockerfile_cu124` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.4 |
+| `Dockerfile_cu128` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.8 |
+
+### Build Example
+
+```bash
+# 构建 Thor 镜像
+bash build_image.sh --profile Dockerfile_thor
+
+# 构建 L4T 镜像
+bash build_image.sh --profile Dockerfile_l4t
+
+# 使用代理构建
+PROXY=http://proxy:port bash build_image.sh --profile Dockerfile_cu124
+```
+
+构建成功后会自动推送到华为云 SWR，并写入飞书表格对应标签页。
+
+---
+
 ## Design Notes
 
 - No modification to Ollama internals
