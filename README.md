@@ -1,150 +1,93 @@
-# Ollama OpenAI Gateway with Task Status
+# Ollama OpenAI Gateway
 
-This repository provides an **OpenAI API–compatible Gateway** that runs **in the same container as Ollama**. It transparently proxies all supported `/v1/*` endpoints to Ollama while maintaining **task-level status** that can be queried via a **pull API**.
+一个运行在 Ollama 前面的轻量任务网关。OpenAI 兼容能力由 Ollama 原生 `/v1/*` 接口提供，Gateway 只负责 HTTP 透传、`X-Task-Id` 和 Redis 任务状态。
 
----
+## 功能
 
-## Overview
+- 透传 Ollama 的 OpenAI 风格接口：`/v1/chat/completions`、`/v1/completions`、`/v1/responses`、`/v1/models`、`/v1/embeddings`、`/v1/images/generations`
+- 支持客户端传入 `X-Task-Id`；未传入时自动生成并通过响应头返回
+- Redis 保存任务状态：`PENDING -> RUNNING -> SUCCESS | FAILED`
+- `/tasks/status` 基于 Redis sorted set 返回最近更新的任务
+- 流式请求期间刷新 `RUNNING` 心跳
+- 根据上游响应自动区分普通 JSON 和 SSE 流式响应
+- Ollama 和 Gateway 在同一个镜像/容器中运行，外部只访问 Gateway 端口 `11535`
 
-- Full passthrough of Ollama's OpenAI-compatible APIs
-- Task status tracking per request (`task_id`)
-- Pull-based status query API (no push/reporting)
-- Redis-backed status storage
-- Streaming-safe (heartbeats during streams)
+## 架构
 
----
-
-## Architecture
-
-```
+```text
 Client / OpenAI SDK
         |
-        |  http://<host>:11535/v1/...
+        | http://<host>:11535/v1/...
         v
-+-----------------------+
-|  Ollama Gateway       |
-|  - OpenAI API Proxy   |
-|  - Task Status Table  | ----> Redis
-+-----------------------+
+  Ollama Gateway  ---->  Redis
         |
-        |  http://127.0.0.1:11434
+        | http://127.0.0.1:11434
         v
-     Ollama
+      Ollama
 ```
 
-### Responsibilities
+## 快速启动
 
-- **Ollama**
-  - Pure inference backend
-  - No task awareness
-  - No status APIs
+```bash
+cp env.example .env
+# 按需修改 .env，至少设置 REDIS_PASSWORD
 
-- **Gateway**
-  - Proxies all `/v1/*` endpoints
-  - Generates or accepts `task_id`
-  - Writes task lifecycle states to Redis
-  - Exposes `/tasks/status/*` for status queries
-
----
-
-## Supported OpenAI APIs
-
-All requests under `/v1/*` are proxied verbatim.
-
-### Text & Multimodal
-
-- `POST /v1/chat/completions`
-  - Streaming
-  - Vision (base64 images)
-  - Tools / function calling
-- `POST /v1/completions`
-- `POST /v1/responses`
-  - Streaming
-  - Tools
-
-### Models & Embeddings
-
-- `GET /v1/models`
-- `GET /v1/models/{model}`
-- `POST /v1/embeddings`
-
-> The Gateway does **not** interpret request/response payloads. It operates strictly at the HTTP layer.
-
----
-
-## Task Status Model
-
-### task_id
-
-- Preferred: provided by client via header
-
-```
-X-Task-Id: <task_id>
+docker compose up -d --build
+docker compose ps
+docker compose logs -f gateway
 ```
 
-- If absent, the Gateway generates a UUID and returns it in the response header:
+默认端口：
 
-```
-X-Task-Id: <generated-uuid>
-```
+| 服务 | 地址 |
+| --- | --- |
+| Gateway | `http://localhost:11535` |
+| Ollama | `127.0.0.1:11434`，仅容器内部使用 |
+| Redis | `.env` 中的 `REDIS_PORT` |
 
-### State Lifecycle
+## 使用示例
 
-```
-PENDING -> RUNNING -> SUCCESS | FAILED
-```
+### OpenAI SDK
 
-| State   | Meaning                          |
-|---------|----------------------------------|
-| PENDING | Request accepted by Gateway      |
-| RUNNING | Request forwarded to Ollama      |
-| SUCCESS | Upstream completed successfully |
-| FAILED  | Upstream error or stream failure |
+```python
+from openai import OpenAI
 
-During streaming, the Gateway periodically refreshes `RUNNING` as a heartbeat.
+client = OpenAI(
+    base_url="http://localhost:11535/v1/",
+    api_key="ollama",
+)
 
----
+resp = client.chat.completions.create(
+    model="qwen3:0.6b",
+    messages=[{"role": "user", "content": "Say this is a test"}],
+)
 
-## Status Storage (Redis)
-
-- **Key**
-
-```
-ts:ollama:<task_id>
+print(resp.choices[0].message.content)
 ```
 
-- **Value**
-  - JSON document containing:
-    - `state`
-    - `stage`
-    - `message`
-    - `extensions`
-    - `timestamp`
+### curl
 
-- **TTL Policy**
-
-| State Type          | TTL     |
-|---------------------|---------|
-| PENDING / RUNNING   | 1 hour  |
-| SUCCESS / FAILED    | 24 hours|
-
----
-
-## Status Query APIs (Pull)
-
-### Get Single Task Status
-
-```
-GET /tasks/status/{task_id}
+```bash
+curl http://localhost:11535/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Task-Id: demo-001" \
+  -d '{
+    "model": "qwen3:0.6b",
+    "messages": [{"role": "user", "content": "介绍一下李白"}],
+    "stream": false
+  }'
 ```
 
-Example:
+查询任务状态：
 
-```
+```bash
 curl http://localhost:11535/tasks/status/demo-001
+curl "http://localhost:11535/tasks/status?limit=50"
 ```
 
-Response example:
+`/tasks/status` 按最近更新时间倒序返回，`limit` 最大为 500。
+
+状态响应示例：
 
 ```json
 {
@@ -159,129 +102,64 @@ Response example:
   "extensions": {
     "method": "POST",
     "path": "/v1/chat/completions",
-    "stream": true
+    "stream": true,
+    "requested_stream": true,
+    "response_stream": true
   },
   "timestamp": 1736400000
 }
 ```
 
-### List Recent Tasks (Debug)
+## 环境变量
 
-```
-GET /tasks/status?limit=50
-```
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `REDIS_HOST` | `172.28.1.1` | Redis 地址；Docker Compose 中使用 `redis` |
+| `REDIS_PORT` | `6379` | Redis 端口 |
+| `REDIS_USER` | `default` | Redis 用户 |
+| `REDIS_PASSWORD` | 空 | Redis 密码，生产环境必须设置 |
+| `REDIS_DB` | `0` | Redis DB |
+| `UPSTREAM_BASE` | `http://127.0.0.1:11434` | Ollama 上游地址 |
+| `UPSTREAM_STARTUP_TIMEOUT_SEC` | `30` | Gateway 等待 Ollama 就绪的秒数 |
+| `TTL_RUNNING` | `3600` | `PENDING` / `RUNNING` 状态保留秒数 |
+| `TTL_DONE` | `86400` | `SUCCESS` / `FAILED` 状态保留秒数 |
+| `HEARTBEAT_SEC` | `10` | 流式请求心跳刷新间隔 |
+| `ALGORITHM_ID` | `ollama-openai` | 状态事件中的算法标识 |
 
----
-
-## Ports & Deployment
-
-### Default (Same Container)
-
-| Component | Address             |
-|----------:|---------------------|
-| Ollama    | 127.0.0.1:11434     |
-| Gateway   | 0.0.0.0:11535       |
-
-> External clients **must** access Ollama through the Gateway port.
-
----
-
-## Usage
-
-### Python (OpenAI SDK)
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:11535/v1/",
-    api_key="ollama"
-)
-
-resp = client.chat.completions.create(
-    model="gpt-oss:20b",
-    messages=[{"role": "user", "content": "Say this is a test"}],
-)
-
-print(resp.choices[0].message.content)
-```
-
-### Streaming with Explicit task_id
+## 常用命令
 
 ```bash
-curl -N http://localhost:11535/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "X-Task-Id: demo-001" \
-  -d '{
-    "model": "gpt-oss:20b",
-    "messages": [{"role": "user", "content": "Say this is a test"}],
-    "stream": true
-  }'
+# 查看日志
+docker compose logs -f gateway
+
+# 拉取模型
+docker exec ollama-gateway ollama pull qwen3:0.6b
+
+# 检查 Redis
+docker exec ollama-redis redis-cli -a your_password ping
+
+# 停止服务
+docker compose down
 ```
 
-Query status in parallel:
+## 测试相关
+
+可以参考 [doc](./tests/doc.md)
+
+## 构建镜像
+
+默认镜像使用 `Dockerfile`：
 
 ```bash
-curl http://localhost:11535/tasks/status/demo-001
+docker build \
+  --build-arg OLLAMA_TAG=0.24.0 \
+  --build-arg PYTHON_VERSION=3.12 \
+  -t ollama-gateway:0.24.0 \
+  -f Dockerfile .
 ```
 
----
-
-## Environment Variables
-
-```
-UPSTREAM_BASE=http://127.0.0.1:11434
-
-REDIS_HOST=172.28.1.1
-REDIS_PORT=6379
-REDIS_USER=default
-REDIS_PASSWORD=******
-REDIS_DB=0
-
-TTL_RUNNING=3600
-TTL_DONE=86400
-
-HEARTBEAT_SEC=10
-```
-
----
-
-## Build & Deploy
-
-### Dockerfile Profiles
-
-| Profile | Feishu Sheet | Description |
-|---------|-------------|-------------|
-| `Dockerfile` | `ARM_without_cuda` / `AMD_without_cuda` | 基础镜像（无 CUDA） |
-| `Dockerfile_l4t` | `l4t` | Jetson (L4T) 设备 |
-| `Dockerfile_thor` | `thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
-| `Dockerfile_cu124` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.4 |
-| `Dockerfile_cu128` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.8 |
-
-### Build Example
+构建镜像时将镜像版本同步飞书
 
 ```bash
-# 构建 Thor 镜像
-bash build_image.sh --profile Dockerfile_thor
-
-# 构建 L4T 镜像
-bash build_image.sh --profile Dockerfile_l4t
-
-# 使用代理构建
-PROXY=http://proxy:port bash build_image.sh --profile Dockerfile_cu124
+bash build_image.sh --profile Dockerfile
 ```
-
-构建成功后会自动推送到华为云 SWR，并写入飞书表格对应标签页。
-
----
-
-## Design Notes
-
-- No modification to Ollama internals
-- No inference-progress percentage (request lifecycle only)
-- Stateless OpenAI API semantics preserved
-- No support for stateful `responses` (e.g., `previous_response_id`)
-
-
-
-

@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 # ---------------------------
 APP_VERSION = "1.0"
 EVENT_TYPE = "task.status.update"
+STATUS_INDEX_KEY = "ts:ollama:index"
 
 # Same-container upstream
 UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "http://127.0.0.1:11434").rstrip("/")
@@ -29,11 +30,22 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
 # TTL seconds
-TTL_RUNNING = int(os.getenv("TTL_RUNNING", "3600"))   # running/pending keep 1h
+TTL_RUNNING = int(os.getenv("TTL_RUNNING", "3600"))   # pending/running keep 1h
 TTL_DONE = int(os.getenv("TTL_DONE", "86400"))        # done keep 24h
 
 # Streaming heartbeat interval
 HEARTBEAT_SEC = float(os.getenv("HEARTBEAT_SEC", "10"))
+
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
 
 # ---------------------------
 # Lifespan
@@ -101,6 +113,10 @@ def rkey(task_id: str) -> str:
     return f"ts:ollama:{task_id}"
 
 
+def status_index_cutoff() -> int:
+    return now_ts() - max(TTL_RUNNING, TTL_DONE)
+
+
 def make_evt(
     task_id: str,
     state: str,
@@ -130,7 +146,29 @@ def make_evt(
 
 
 async def write_status(task_id: str, evt: Dict[str, Any], ttl: int) -> None:
-    await app.state.redis.set(rkey(task_id), json.dumps(evt, ensure_ascii=False), ex=ttl)
+    pipe = app.state.redis.pipeline()
+    pipe.set(rkey(task_id), json.dumps(evt, ensure_ascii=False), ex=ttl)
+    pipe.zadd(STATUS_INDEX_KEY, {task_id: evt["timestamp"]})
+    pipe.zremrangebyscore(STATUS_INDEX_KEY, "-inf", status_index_cutoff())
+    await pipe.execute()
+
+
+async def set_status(
+    task_id: str,
+    state: str,
+    stage: str,
+    message: str,
+    extensions: Dict[str, Any],
+    ttl: int,
+) -> None:
+    await write_status(task_id, make_evt(task_id, state, stage=stage, message=message, extensions=extensions), ttl)
+
+
+async def finish_status(task_id: str, status_code: int, extensions: Dict[str, Any]) -> None:
+    if 200 <= status_code < 300:
+        await set_status(task_id, "SUCCESS", "done", "completed", extensions, TTL_DONE)
+    else:
+        await set_status(task_id, "FAILED", "error", f"upstream status {status_code}", extensions, TTL_DONE)
 
 
 def get_task_id(req: Request) -> str:
@@ -140,30 +178,27 @@ def get_task_id(req: Request) -> str:
     return str(uuid.uuid4())
 
 
-def hop_by_hop_filter(headers: httpx.Headers) -> Dict[str, str]:
-    # Remove hop-by-hop headers for proxy correctness
-    hop = {
-        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-        "te", "trailers", "transfer-encoding", "upgrade",
-    }
+def proxy_headers(headers, drop_host: bool = False) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for k, v in headers.items():
-        if k.lower() in hop:
+        name = k.lower()
+        if name in HOP_BY_HOP_HEADERS or (drop_host and name == "host"):
             continue
         out[k] = v
     return out
 
 
-def build_extensions(req: Request, is_stream: bool) -> Dict[str, Any]:
+def build_extensions(req: Request, requested_stream: bool) -> Dict[str, Any]:
     return {
         "method": req.method,
         "path": req.url.path,
         "query": str(req.url.query) if req.url.query else "",
-        "stream": is_stream,
+        "stream": requested_stream,
+        "requested_stream": requested_stream,
     }
 
 
-def guess_is_stream(raw_body: bytes) -> bool:
+def requested_stream(raw_body: bytes) -> bool:
     if not raw_body:
         return False
     try:
@@ -171,6 +206,11 @@ def guess_is_stream(raw_body: bytes) -> bool:
         return isinstance(js, dict) and js.get("stream") is True
     except Exception:
         return False
+
+
+def is_event_stream(headers: httpx.Headers) -> bool:
+    content_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    return content_type == "text/event-stream"
 
 
 # ---------------------------
@@ -186,17 +226,26 @@ async def get_status(task_id: str):
 
 @app.get("/tasks/status")
 async def list_status(limit: int = 50):
-    # Debug/ops helper. Use SCAN, capped by limit.
+    limit = max(1, min(limit, 500))
     items = []
-    cnt = 0
-    async for k in app.state.redis.scan_iter(match="ts:ollama:*"):
-        v = await app.state.redis.get(k)
-        if not v:
+
+    task_ids = await app.state.redis.zrevrange(STATUS_INDEX_KEY, 0, limit - 1)
+    if not task_ids:
+        return {"items": items, "count": 0}
+
+    keys = [rkey(task_id) for task_id in task_ids]
+    values = await app.state.redis.mget(keys)
+    stale_task_ids = []
+
+    for task_id, value in zip(task_ids, values):
+        if not value:
+            stale_task_ids.append(task_id)
             continue
-        items.append(json.loads(v))
-        cnt += 1
-        if cnt >= limit:
-            break
+        items.append(json.loads(value))
+
+    if stale_task_ids:
+        await app.state.redis.zrem(STATUS_INDEX_KEY, *stale_task_ids)
+
     return {"items": items, "count": len(items)}
 
 
@@ -208,30 +257,29 @@ async def forward(req: Request, task_id: str) -> Response:
     if req.url.query:
         upstream_url += f"?{req.url.query}"
 
-    raw_body = await req.body()
-    is_stream = guess_is_stream(raw_body)
-    ext = build_extensions(req, is_stream)
-
-    # Record lifecycle: PENDING -> RUNNING
-    await write_status(task_id, make_evt(task_id, "PENDING", stage="queued", message="request accepted", extensions=ext), TTL_RUNNING)
-    await write_status(task_id, make_evt(task_id, "RUNNING", stage="forwarding", message="forwarding to upstream", extensions=ext), TTL_RUNNING)
-
-    # Prepare headers (remove host; keep others to preserve OpenAI compat)
-    headers = dict(req.headers)
-    headers.pop("host", None)
+    ext = build_extensions(req, requested_stream=False)
 
     try:
-        if is_stream:
-            # Critical fix: keep upstream stream open until generator completes
-            request = app.state.http_client.build_request(
-                method=req.method,
-                url=upstream_url,
-                headers=headers,
-                content=raw_body,
-            )
-            up = await app.state.http_client.send(request, stream=True)
-            status_code = up.status_code
-            resp_headers = hop_by_hop_filter(up.headers)
+        await set_status(task_id, "PENDING", "accepted", "request accepted", ext, TTL_RUNNING)
+
+        raw_body = await req.body()
+        ext = build_extensions(req, requested_stream(raw_body))
+        await set_status(task_id, "RUNNING", "forwarding", "forwarding to upstream", ext, TTL_RUNNING)
+
+        request = app.state.http_client.build_request(
+            method=req.method,
+            url=upstream_url,
+            headers=proxy_headers(req.headers, drop_host=True),
+            content=raw_body,
+        )
+        up = await app.state.http_client.send(request, stream=True)
+        status_code = up.status_code
+        resp_headers = proxy_headers(up.headers)
+        response_stream = is_event_stream(up.headers)
+        ext["stream"] = response_stream
+        ext["response_stream"] = response_stream
+
+        if response_stream:
             last_hb = time.time()
 
             async def gen():
@@ -240,56 +288,37 @@ async def forward(req: Request, task_id: str) -> Response:
                     async for chunk in up.aiter_bytes():
                         now = time.time()
                         if now - last_hb >= HEARTBEAT_SEC:
-                            await write_status(
-                                task_id,
-                                make_evt(task_id, "RUNNING", stage="streaming", message="stream alive", extensions=ext),
-                                TTL_RUNNING,
-                            )
+                            await set_status(task_id, "RUNNING", "streaming", "stream alive", ext, TTL_RUNNING)
                             last_hb = now
                         if chunk:
                             yield chunk
 
-                    # Upstream finished normally
-                    if 200 <= status_code < 300:
-                        await write_status(task_id, make_evt(task_id, "SUCCESS", stage="done", message="completed", extensions=ext), TTL_DONE)
-                    else:
-                        await write_status(task_id, make_evt(task_id, "FAILED", stage="error", message=f"upstream status {status_code}", extensions=ext), TTL_DONE)
-
+                    await finish_status(task_id, status_code, ext)
                 except (httpx.StreamError, httpx.ReadError) as e:
-                    await write_status(task_id, make_evt(task_id, "FAILED", stage="error", message=f"stream error: {type(e).__name__}", extensions=ext), TTL_DONE)
+                    await set_status(task_id, "FAILED", "error", f"stream error: {type(e).__name__}", ext, TTL_DONE)
                     raise
                 except asyncio.CancelledError:
-                    await write_status(task_id, make_evt(task_id, "FAILED", stage="error", message="client disconnected", extensions=ext), TTL_DONE)
+                    await set_status(task_id, "FAILED", "error", "client disconnected", ext, TTL_DONE)
                     raise
                 except Exception as e:
-                    await write_status(task_id, make_evt(task_id, "FAILED", stage="error", message=f"gateway error: {type(e).__name__}", extensions=ext), TTL_DONE)
+                    await set_status(task_id, "FAILED", "error", f"gateway error: {type(e).__name__}", ext, TTL_DONE)
                     raise
                 finally:
-                    # Always close upstream stream
                     await up.aclose()
 
             resp = StreamingResponse(gen(), status_code=status_code, headers=resp_headers)
             resp.headers["X-Task-Id"] = task_id
             return resp
 
-        # Non-streaming request
-        up = await app.state.http_client.request(
-            method=req.method,
-            url=upstream_url,
-            headers=headers,
-            content=raw_body,
-        )
+        try:
+            body = await up.aread()
+        finally:
+            await up.aclose()
 
-        resp_headers = hop_by_hop_filter(up.headers)
-
-        if 200 <= up.status_code < 300:
-            await write_status(task_id, make_evt(task_id, "SUCCESS", stage="done", message="completed", extensions=ext), TTL_DONE)
-        else:
-            await write_status(task_id, make_evt(task_id, "FAILED", stage="error", message=f"upstream status {up.status_code}", extensions=ext), TTL_DONE)
-
+        await finish_status(task_id, status_code, ext)
         resp = Response(
-            content=up.content,
-            status_code=up.status_code,
+            content=body,
+            status_code=status_code,
             headers=resp_headers,
             media_type=up.headers.get("content-type"),
         )
@@ -297,11 +326,10 @@ async def forward(req: Request, task_id: str) -> Response:
         return resp
 
     except httpx.RequestError as e:
-        await write_status(task_id, make_evt(task_id, "FAILED", stage="error", message=f"upstream request error: {type(e).__name__}", extensions=ext), TTL_DONE)
+        await set_status(task_id, "FAILED", "error", f"upstream request error: {type(e).__name__}", ext, TTL_DONE)
         raise HTTPException(status_code=502, detail="Bad gateway")
     except Exception as e:
-        # Any other error
-        await write_status(task_id, make_evt(task_id, "FAILED", stage="error", message=f"gateway error: {type(e).__name__}", extensions=ext), TTL_DONE)
+        await set_status(task_id, "FAILED", "error", f"gateway error: {type(e).__name__}", ext, TTL_DONE)
         raise
 
 
