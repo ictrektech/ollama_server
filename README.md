@@ -1,10 +1,12 @@
 # Ollama OpenAI Gateway
 
-一个运行在 Ollama 前面的轻量任务网关。OpenAI 兼容能力由 Ollama 原生 `/v1/*` 接口提供，Gateway 只负责 HTTP 透传、`X-Task-Id` 和 Redis 任务状态。
+一个运行在 Ollama 前面的轻量任务网关。Gateway 负责 `X-Task-Id`、Redis 任务状态，并将 `/v1/chat/completions` 转换为 Ollama 原生 `/api/chat`，让 OpenAI 风格请求也能使用 Ollama 原生请求级 `options`（例如 `options.num_ctx`）。其他 `/v1/*` 接口继续透传给 Ollama。
 
 ## 功能
 
-- 透传 Ollama 的 OpenAI 风格接口：`/v1/chat/completions`、`/v1/completions`、`/v1/responses`、`/v1/models`、`/v1/embeddings`、`/v1/images/generations`
+- OpenAI 风格 `/v1/chat/completions` 兼容 Ollama 原生 `/api/chat`，支持请求级 `options.num_ctx`
+- OpenAI 风格 `/v1/completions` 兼容 Ollama 原生 `/api/generate`，支持请求级 `options.num_ctx`
+- 透传其他 Ollama OpenAI 风格接口：`/v1/responses`、`/v1/models`、`/v1/embeddings`、`/v1/images/generations`
 - 支持客户端传入 `X-Task-Id`；未传入时自动生成并通过响应头返回
 - Redis 保存任务状态：`PENDING -> RUNNING -> SUCCESS | FAILED`
 - `/tasks/status` 基于 Redis sorted set 返回最近更新的任务
@@ -25,6 +27,16 @@ Client / OpenAI SDK
         v
       Ollama
 ```
+
+## 兼容矩阵
+
+| OpenAI 接口 | 对应 Ollama 接口 | 当前兼容状态 |
+| --- | --- | --- |
+| `POST /v1/chat/completions` | `POST /api/chat` | 已转换 |
+| `POST /v1/completions` | `POST /api/generate` | 已转换 |
+| `POST /v1/embeddings` | `POST /api/embed` | 待补 |
+| `POST /v1/responses` | 桥接到 `/api/chat` | 待补 |
+| `GET /v1/models` | `GET /api/tags` | 当前透传 Ollama `/v1/models` |
 
 ## 快速启动
 
@@ -67,6 +79,8 @@ print(resp.choices[0].message.content)
 
 ### curl
 
+以使用该方式控制不同模型的上下文窗口大小
+
 ```bash
 curl http://localhost:11535/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -74,6 +88,24 @@ curl http://localhost:11535/v1/chat/completions \
   -d '{
     "model": "qwen3:0.6b",
     "messages": [{"role": "user", "content": "介绍一下李白"}],
+    "max_tokens": 100,
+    "options": {"num_ctx": 1024},
+    "stream": false
+  }'
+```
+
+`/v1/chat/completions` 会在 Gateway 内部转发到 Ollama `/api/chat`。OpenAI 常用参数会映射到 Ollama `options`，例如 `max_tokens` / `max_completion_tokens` -> `num_predict`；显式传入的 `options` 优先级更高。
+
+文本补全同样支持请求级 `options`：
+
+```bash
+curl http://localhost:11535/v1/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Task-Id: demo-002" \
+  -d '{
+    "model": "qwen3:0.6b",
+    "prompt": "写一句关于春天的短句：",
+    "options": {"num_ctx": 8192},
     "stream": false
   }'
 ```
