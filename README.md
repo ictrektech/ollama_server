@@ -13,6 +13,7 @@
 - 流式请求期间刷新 `RUNNING` 心跳
 - 根据上游响应自动区分普通 JSON 和 SSE 流式响应
 - Ollama 和 Gateway 在同一个镜像/容器中运行，外部只访问 Gateway 端口 `11535`
+- 增加 gateway 客户端手动中断检测，及时中断 Ollama 上游推理请求，节约算力
 
 ## 架构
 
@@ -176,11 +177,38 @@ docker compose down
 
 ## 测试相关
 
-可以参考 [doc](./tests/doc.md)
+可以参考 [tests/README.md](./tests/README.md)
 
 ## 构建镜像
 
 默认镜像使用 `Dockerfile`：
+
+### Dockerfile Profiles
+
+| Profile | Feishu Sheet | Description |
+|---------|-------------|-------------|
+| `Dockerfile` | `ARM_without_cuda` / `AMD_without_cuda` | 基础镜像（无 CUDA） |
+| `Dockerfile_l4t` | `l4t` | Jetson (L4T) 设备 |
+| `Dockerfile_thor` | `thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
+| `Dockerfile_cu124` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.4 |
+| `Dockerfile_cu128` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.8 |
+
+### Build Example
+
+```bash
+# 构建 Thor 镜像
+bash build_image.sh --profile Dockerfile_thor
+
+# 构建 L4T 镜像
+bash build_image.sh --profile Dockerfile_l4t
+
+# 使用代理构建
+PROXY=http://proxy:port bash build_image.sh --profile Dockerfile_cu124
+```
+
+构建成功后会自动推送到华为云 SWR，并写入飞书表格对应标签页。
+
+### 手动构建
 
 ```bash
 docker build \
@@ -188,10 +216,4 @@ docker build \
   --build-arg PYTHON_VERSION=3.12 \
   -t ollama-gateway:0.24.0 \
   -f Dockerfile .
-```
-
-构建镜像时将镜像版本同步飞书
-
-```bash
-bash build_image.sh --profile Dockerfile
 ```
