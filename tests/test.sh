@@ -48,7 +48,7 @@ fi
 
 # 启动 Gateway (在后台)
 echo "Starting Gateway..."
-python3 -m uvicorn gateway:app --host 0.0.0.0 --port 11535 > /tmp/gateway.log 2>&1 &
+python3 -m uvicorn ollama_gateway.gateway:app --host 0.0.0.0 --port 11535 > /tmp/gateway.log 2>&1 &
 GATEWAY_PID=$!
 echo "Gateway started with PID $GATEWAY_PID"
 
@@ -94,5 +94,5 @@ python3 -m unittest discover -s tests -p "test_*.py" -v || TEST_STATUS=$?
 # fi
 
 # 保持容器运行
-# echo "Keeping container alive. Press Ctrl+C to exit."
-# tail -f /dev/null
+echo "Keeping container alive. Press Ctrl+C to exit."
+tail -f /dev/null

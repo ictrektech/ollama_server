@@ -1,0 +1,2 @@
+"""Ollama OpenAI Gateway package."""
+

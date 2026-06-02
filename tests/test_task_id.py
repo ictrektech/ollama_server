@@ -1,10 +1,10 @@
-"""Unit tests for task ID / UUID generation logic in gateway.py"""
+"""Unit tests for task ID / UUID generation logic."""
 
 import unittest
 from unittest.mock import Mock, MagicMock
 import uuid
 
-from gateway import get_task_id
+from ollama_gateway.gateway import get_task_id
 
 
 class TestGetTaskId(unittest.TestCase):

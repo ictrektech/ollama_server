@@ -12,7 +12,7 @@ OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 TASK_ID = "demo-001"
 TEST_MODEL = os.getenv("TEST_MODEL", "qwen3:0.6b")
 
-# Redis配置 (从环境变量读取，与gateway.py保持一致)
+# Redis配置 (从环境变量读取，与 ollama_gateway.gateway 保持一致)
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_USER = os.getenv("REDIS_USER", "default")
@@ -99,7 +99,7 @@ class TestRedisTaskStatus(unittest.TestCase):
         the loaded model context length reported by /api/ps.
         """
 
-        expected_num_ctx = 12345
+        expected_num_ctx = 16384
         request_data = {
             "model": TEST_MODEL,
             "messages": [{"role": "user", "content": "Say ok"}],

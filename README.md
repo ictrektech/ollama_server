@@ -29,6 +29,15 @@ Client / OpenAI SDK
       Ollama
 ```
 
+## 代码结构
+
+| 文件 | 说明 |
+| --- | --- |
+| `ollama_gateway/gateway.py` | FastAPI 入口、路由分发、上游转发、流式响应和断连处理 |
+| `ollama_gateway/openai_to_ollama.py` | 将 OpenAI 风格请求转换为 Ollama 原生 `/api/chat` / `/api/generate` 请求 |
+| `ollama_gateway/ollama_to_openai.py` | 将 Ollama 原生响应转换回 OpenAI 风格响应和 SSE chunk |
+| `ollama_gateway/task_status.py` | Redis 任务状态事件、TTL、最近任务列表和状态索引清理 |
+
 ## 兼容矩阵
 
 | OpenAI 接口 | 对应 Ollama 接口 | 当前兼容状态 |
@@ -156,6 +165,7 @@ curl "http://localhost:11535/tasks/status?limit=50"
 | `UPSTREAM_STARTUP_TIMEOUT_SEC` | `30` | Gateway 等待 Ollama 就绪的秒数 |
 | `TTL_RUNNING` | `3600` | `PENDING` / `RUNNING` 状态保留秒数 |
 | `TTL_DONE` | `86400` | `SUCCESS` / `FAILED` 状态保留秒数 |
+| `STATUS_INDEX_CLEANUP_INTERVAL_SEC` | `60` | Redis 状态索引过期任务清理间隔；设为 `0` 表示每次写状态都清理 |
 | `HEARTBEAT_SEC` | `10` | 流式请求心跳刷新间隔 |
 | `ALGORITHM_ID` | `ollama-openai` | 状态事件中的算法标识 |
 

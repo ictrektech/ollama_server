@@ -20,7 +20,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ollama-gateway:0.24.0
+      args:
+        OLLAMA_TAG: ${OLLAMA_TAG:-latest}
+    image: ollama-gateway:${OLLAMA_TAG:-latest}
     container_name: ollama-gateway-test
     entrypoint: ["/bin/bash", "-c"]
     command:

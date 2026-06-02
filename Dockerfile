@@ -30,7 +30,8 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN uv pip install --no-cache --python /opt/venv/bin/python -r /app/requirements.txt
 
-COPY gateway.py start.sh /app/
+COPY start.sh /app/
+COPY ollama_gateway /app/ollama_gateway
 RUN chmod +x /app/start.sh
 
 EXPOSE 11535

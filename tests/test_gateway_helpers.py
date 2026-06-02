@@ -4,8 +4,8 @@ import unittest
 
 import httpx
 
-import gateway
-from gateway import (
+import ollama_gateway.gateway as gateway
+from ollama_gateway.gateway import (
     build_ollama_chat_payload,
     build_ollama_generate_payload,
     convert_ollama_chat_response,

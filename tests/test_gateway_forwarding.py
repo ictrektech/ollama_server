@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 from fastapi import HTTPException
 
-import gateway
+import ollama_gateway.gateway as gateway
 
 
 class FakeRequest:
