@@ -20,8 +20,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: ollama-gateway:0.24.0
-    container_name: ollama-gateway
+    image: ollama_server:0.24.0
+    container_name: ollama_server
     entrypoint: ["/app/start.sh"]
     ports:
       - "11535:11535"
@@ -35,6 +35,8 @@ services:
       - ollama-data:/root/.ollama
     runtime: nvidia
     environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       OLLAMA_CONTEXT_LENGTH: "8192"

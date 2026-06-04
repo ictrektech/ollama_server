@@ -71,27 +71,11 @@ docker compose --env-file .env -f docker/docker-compose.yml logs -f gateway
 
 ### OpenAI SDK
 
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:11535/v1/",
-    api_key="ollama",
-)
-
-resp = client.chat.completions.create(
-    model="qwen3:0.6b",
-    messages=[{"role": "user", "content": "介绍一下李白"}],
-    max_tokens=100,
-    extra_body={
-        "options": {
-            "num_ctx": 32768
-        }
-    },
-)
-
-print(resp.choices[0].message.content)
+```bash
+python examples/openai_sdk_keep_alive.py
 ```
+
+完整示例见 [`examples/openai_sdk_keep_alive.py`](./examples/openai_sdk_keep_alive.py)。
 
 ### curl
 
@@ -182,7 +166,7 @@ curl "http://localhost:11535/tasks/status?limit=50"
 docker compose --env-file .env -f docker/docker-compose.yml logs -f gateway
 
 # 拉取模型
-docker exec ollama-gateway ollama pull qwen3:0.6b
+docker exec ollama_server ollama pull qwen3:0.6b
 
 # 检查 Redis
 docker exec ollama-redis redis-cli -a your_password ping
@@ -240,8 +224,8 @@ PROXY=http://proxy:port bash scripts/build_image.sh --profile Dockerfile_cu128
 
 ```bash
 docker build \
-  --build-arg OLLAMA_TAG=0.24.0 \
+  --build-arg OLLAMA_TAG=0.30.4 \
   --build-arg PYTHON_VERSION=3.12 \
-  -t ollama-gateway:0.24.0 \
+  -t ollama_server:0.30.4 \
   -f docker/Dockerfile .
 ```

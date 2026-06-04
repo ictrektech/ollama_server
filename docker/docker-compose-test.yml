@@ -24,8 +24,8 @@ services:
       dockerfile: docker/Dockerfile
       args:
         OLLAMA_TAG: ${OLLAMA_TAG:-latest}
-    image: ollama-gateway:${OLLAMA_TAG:-latest}
-    container_name: ollama-gateway-test
+    image: ollama_server:${OLLAMA_TAG:-latest}
+    container_name: ollama_server-test
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -35,6 +35,8 @@ services:
     env_file:
       - ../.env
     environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       TEST_MODEL: ${TEST_MODEL:-qwen3:0.6b}
       PYTHONPATH: /app
       NVIDIA_VISIBLE_DEVICES: all
