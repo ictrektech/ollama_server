@@ -216,7 +216,7 @@ Docker 相关文件集中在 `docker/`，容器启动和构建辅助脚本集中
 
 | Profile | Feishu Sheet | Description |
 |---------|-------------|-------------|
-| `Dockerfile` | `ARM_without_cuda` / `AMD_without_cuda` | 基础镜像（无 CUDA） |
+| `Dockerfile` | `ARM_with_cuda` / `AMD_with_cuda` | 官方 Ollama 基础镜像，配合 NVIDIA runtime 可调用显卡推理 |
 | `Dockerfile_l4t` | `l4t` | Jetson (L4T) 设备 |
 | `Dockerfile_thor` | `thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
 | `Dockerfile_cu128` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.8 |

@@ -17,24 +17,24 @@ FEISHU_SPREADSHEET_TOKEN="Htotsn3oahO1zxt73YMcaB1zn8e"
 
 # profile -> sheet 名称映射
 # 后续如需调整，直接改这里
-# 根据当前架构决定 CUDA sheet 前缀
+# 根据当前架构决定飞书 sheet 前缀
 case "$(uname -m)" in
   x86_64)
-    CUDA_PREFIX="AMD"
+    ARCH_PREFIX="AMD"
     ;;
   aarch64)
-    CUDA_PREFIX="ARM"
+    ARCH_PREFIX="ARM"
     ;;
   *)
-    CUDA_PREFIX="UNKNOWN"
+    ARCH_PREFIX="UNKNOWN"
     ;;
 esac
 
 declare -A PROFILE_TO_SHEET_TITLE=(
-  ["Dockerfile"]="${CUDA_PREFIX}_without_cuda"
+  ["Dockerfile"]="${ARCH_PREFIX}_with_cuda"
   ["Dockerfile_l4t"]="l4t"
   ["Dockerfile_thor"]="thor_spark"
-  ["Dockerfile_cu128"]="${CUDA_PREFIX}_with_cuda"
+  ["Dockerfile_cu128"]="${ARCH_PREFIX}_with_cuda"
 )
 
 
