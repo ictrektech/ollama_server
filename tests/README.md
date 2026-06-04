@@ -1,11 +1,30 @@
 # Testing
 
-本目录包含两类测试：
+本目录包含三类测试：
 
 - 单元测试：直接测试 `ollama_gateway` 模块里的辅助函数和 OpenAI/Ollama 请求响应转换，不需要启动 Redis、Ollama 或 Gateway。
+- 代理契约测试：使用 fake upstream 验证 Gateway 转发请求和处理响应的行为，不需要真实 Redis 或 Ollama。
 - 集成测试：通过 Docker Compose 启动 Redis、Ollama 和 Gateway，发送真实请求，并检查 Redis 任务状态。
 
+## 目录结构
+
+| 路径 | 类型 | 说明 |
+| --- | --- | --- |
+| `unit/` | 单元测试 | 测试纯函数、状态存储和请求/响应转换逻辑 |
+| `contract/` | 代理契约测试 | 使用 fake upstream 验证 Gateway 转发路径、headers、body、SSE 和断连处理 |
+| `integration/` | 集成测试 | 使用真实 Redis、Ollama 和 Gateway 验证端到端行为 |
+| `test.sh` | 集成测试入口 | 容器内启动 Ollama、拉取模型、启动 Gateway、运行 unittest |
+
 ## 快速运行
+
+以下命令默认从仓库根目录执行。
+
+运行不依赖 Redis / Ollama / Docker 的快速测试：
+
+```bash
+.venv/bin/python -m unittest discover -s tests/unit -p "test_*.py" -v
+.venv/bin/python -m unittest discover -s tests/contract -p "test_*.py" -v
+```
 
 运行完整集成测试：
 
@@ -36,14 +55,14 @@ OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.y
 
 | 文件 | 类型 | 覆盖内容 |
 | --- | --- | --- |
-| `test_task_id.py` | 单元测试 | `X-Task-Id` 透传、空值处理、自动 UUID 生成 |
-| `test_gateway_helpers.py` | 单元测试 | 请求头过滤、流式识别、状态 TTL、`/v1/chat/completions -> /api/chat`、`/v1/completions -> /api/generate` 的转换 |
-| `test_gateway_forwarding.py` | 代理契约测试 | 使用 fake upstream 验证 Gateway 发往 Ollama 的路径、headers、body、缺参错误、上游错误、透传路径和 SSE 结构 |
-| `test_task_status_store.py` | 单元测试 | Redis 状态写入、状态索引清理节流 |
-| `test_gateway_inference_status.py` | 集成测试 | 真实请求 `/v1/chat/completions`，验证 OpenAI 风格响应、Redis 最终任务状态，以及 `options.num_ctx` 是否反映到 Ollama `/api/ps` 的 `context_length` |
+| `unit/test_task_id.py` | 单元测试 | `X-Task-Id` 透传、空值处理、自动 UUID 生成 |
+| `unit/test_gateway_helpers.py` | 单元测试 | 请求头过滤、流式识别、状态 TTL、`/v1/chat/completions -> /api/chat`、`/v1/completions -> /api/generate` 的转换 |
+| `contract/test_gateway_forwarding.py` | 代理契约测试 | 使用 fake upstream 验证 Gateway 发往 Ollama 的路径、headers、body、缺参错误、上游错误、透传路径和 SSE 结构 |
+| `unit/test_task_status_store.py` | 单元测试 | Redis 状态写入、状态索引清理节流 |
+| `integration/test_gateway_inference_status.py` | 集成测试 | 真实请求 `/v1/chat/completions`，验证 OpenAI 风格响应、Redis 最终任务状态，以及 `options.num_ctx` 是否反映到 Ollama `/api/ps` 的 `context_length` |
 | `test.sh` | 集成测试入口 | 启动 Ollama、拉取模型、启动 Gateway、运行 unittest |
 
-`test_gateway_forwarding.py` 不需要真实 Ollama 或 Redis，重点防止上线前漏掉这类代理问题：
+`contract/test_gateway_forwarding.py` 不需要真实 Ollama 或 Redis，重点防止上线前漏掉这类代理问题：
 
 - 转换请求体后仍转发原始 `Content-Length`
 - 上游路径没有转成 `/api/chat` 或 `/api/generate`
