@@ -54,9 +54,9 @@ Client / OpenAI SDK
 cp env.example .env
 # 按需修改 .env，至少设置 REDIS_PASSWORD
 
-docker compose up -d --build
-docker compose ps
-docker compose logs -f gateway
+docker compose --env-file .env -f docker/docker-compose.yml up -d --build
+docker compose --env-file .env -f docker/docker-compose.yml ps
+docker compose --env-file .env -f docker/docker-compose.yml logs -f gateway
 ```
 
 默认端口：
@@ -81,7 +81,13 @@ client = OpenAI(
 
 resp = client.chat.completions.create(
     model="qwen3:0.6b",
-    messages=[{"role": "user", "content": "Say this is a test"}],
+    messages=[{"role": "user", "content": "介绍一下李白"}],
+    max_tokens=100,
+    extra_body={
+        "options": {
+            "num_ctx": 32768
+        }
+    },
 )
 
 print(resp.choices[0].message.content)
@@ -89,7 +95,7 @@ print(resp.choices[0].message.content)
 
 ### curl
 
-以使用该方式控制不同模型的上下文窗口大小
+可以使用该方式控制不同模型的上下文窗口大小。OpenAI SDK 通过 `extra_body` 传入 Ollama 原生 `options`；curl 可直接在请求体中传入 `options`。
 
 ```bash
 curl http://localhost:11535/v1/chat/completions \
@@ -173,7 +179,7 @@ curl "http://localhost:11535/tasks/status?limit=50"
 
 ```bash
 # 查看日志
-docker compose logs -f gateway
+docker compose --env-file .env -f docker/docker-compose.yml logs -f gateway
 
 # 拉取模型
 docker exec ollama-gateway ollama pull qwen3:0.6b
@@ -182,16 +188,29 @@ docker exec ollama-gateway ollama pull qwen3:0.6b
 docker exec ollama-redis redis-cli -a your_password ping
 
 # 停止服务
-docker compose down
+docker compose --env-file .env -f docker/docker-compose.yml down
 ```
 
 ## 测试相关
 
 可以参考 [tests/README.md](./tests/README.md)
 
+## 目录结构
+
+Docker 相关文件集中在 `docker/`，容器启动和构建辅助脚本集中在 `scripts/`：
+
+| 路径 | 说明 |
+| --- | --- |
+| `docker/Dockerfile*` | 各镜像 profile |
+| `docker/docker-compose.yml` | 默认运行环境 |
+| `docker/docker-compose-test.yml` | 集成测试环境 |
+| `scripts/start.sh` | 容器启动入口 |
+| `scripts/install_python.sh` | 基础镜像 Python 安装脚本 |
+| `scripts/build_image.sh` | 构建、推送并写入飞书的脚本 |
+
 ## 构建镜像
 
-默认镜像使用 `Dockerfile`：
+默认镜像使用 `docker/Dockerfile`：
 
 ### Dockerfile Profiles
 
@@ -200,20 +219,19 @@ docker compose down
 | `Dockerfile` | `ARM_without_cuda` / `AMD_without_cuda` | 基础镜像（无 CUDA） |
 | `Dockerfile_l4t` | `l4t` | Jetson (L4T) 设备 |
 | `Dockerfile_thor` | `thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
-| `Dockerfile_cu124` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.4 |
 | `Dockerfile_cu128` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.8 |
 
 ### Build Example
 
 ```bash
 # 构建 Thor 镜像
-bash build_image.sh --profile Dockerfile_thor
+bash scripts/build_image.sh --profile Dockerfile_thor
 
 # 构建 L4T 镜像
-bash build_image.sh --profile Dockerfile_l4t
+bash scripts/build_image.sh --profile Dockerfile_l4t
 
 # 使用代理构建
-PROXY=http://proxy:port bash build_image.sh --profile Dockerfile_cu124
+PROXY=http://proxy:port bash scripts/build_image.sh --profile Dockerfile_cu128
 ```
 
 构建成功后会自动推送到华为云 SWR，并写入飞书表格对应标签页。
@@ -225,5 +243,5 @@ docker build \
   --build-arg OLLAMA_TAG=0.24.0 \
   --build-arg PYTHON_VERSION=3.12 \
   -t ollama-gateway:0.24.0 \
-  -f Dockerfile .
+  -f docker/Dockerfile .
 ```

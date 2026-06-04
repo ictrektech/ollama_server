@@ -1,3 +1,5 @@
+name: ollama_server
+
 services:
   redis:
     image: redis:7-alpine
@@ -16,15 +18,15 @@ services:
 
   gateway:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     image: ollama-gateway:0.24.0
     container_name: ollama-gateway
     entrypoint: ["/app/start.sh"]
     ports:
       - "11535:11535"
     env_file:
-      - .env
+      - ../.env
     depends_on:
       redis:
         condition: service_healthy

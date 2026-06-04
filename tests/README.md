@@ -10,26 +10,26 @@
 运行完整集成测试：
 
 ```bash
-OLLAMA_TAG=0.30.0 docker compose -f docker-compose-test.yml up -d
+OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.yml up -d
 ```
 
 重新跑测试前清理容器：
 
 ```bash
-docker compose -f docker-compose-test.yml down
-docker compose -f docker-compose-test.yml up
+OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.yml down
+OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.yml up
 ```
 
-修改 `Dockerfile`、`requirements.txt`、`install_python.sh` 或系统依赖后，需要重构镜像：
+修改 `docker/Dockerfile`、`requirements.txt`、`scripts/install_python.sh` 或系统依赖后，需要重构镜像：
 
 ```bash
-docker compose -f docker-compose-test.yml up --build
+OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.yml up --build
 ```
 
 清理容器和 volume：
 
 ```bash
-docker compose -f docker-compose-test.yml down -v --remove-orphans
+OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.yml down -v --remove-orphans
 ```
 
 ## 测试覆盖
@@ -41,7 +41,7 @@ docker compose -f docker-compose-test.yml down -v --remove-orphans
 | `test_gateway_forwarding.py` | 代理契约测试 | 使用 fake upstream 验证 Gateway 发往 Ollama 的路径、headers、body、缺参错误、上游错误、透传路径和 SSE 结构 |
 | `test_task_status_store.py` | 单元测试 | Redis 状态写入、状态索引清理节流 |
 | `test_gateway_inference_status.py` | 集成测试 | 真实请求 `/v1/chat/completions`，验证 OpenAI 风格响应、Redis 最终任务状态，以及 `options.num_ctx` 是否反映到 Ollama `/api/ps` 的 `context_length` |
-| `test.sh` | 测试入口 | 启动 Ollama、拉取模型、启动 Gateway、运行 unittest |
+| `test.sh` | 集成测试入口 | 启动 Ollama、拉取模型、启动 Gateway、运行 unittest |
 
 `test_gateway_forwarding.py` 不需要真实 Ollama 或 Redis，重点防止上线前漏掉这类代理问题：
 
@@ -56,7 +56,7 @@ docker compose -f docker-compose-test.yml down -v --remove-orphans
 
 ## 集成测试流程
 
-`tests/test.sh` 会依次执行：
+`docker/docker-compose-test.yml` 会挂载仓库根目录到容器内 `/app`，并执行 `tests/test.sh`。`tests/test.sh` 会依次执行：
 
 1. 启动 Ollama。
 2. 等待 `/api/version` 就绪。
@@ -76,13 +76,13 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 查看日志：
 
 ```bash
-OLLAMA_TAG=0.30.0 docker compose -f docker-compose-test.yml logs -f
+OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.yml logs -f
 ```
 
 进入测试容器：
 
 ```bash
-OLLAMA_TAG=0.30.0 docker compose -f docker-compose-test.yml exec gateway bash
+OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.yml exec gateway bash
 ```
 
 测试脚本结束后会保持容器运行，方便查看：

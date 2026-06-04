@@ -1,8 +1,8 @@
-FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
+FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
 
-ARG ARCH=arm64
+ARG ARCH=amd64
 ARG JETPACK=false
-ARG JETPACK_MAJOR=6
+ARG JETPACK_MAJOR=unknown
 ARG PROXY
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -55,47 +55,41 @@ RUN set -eux; \
     chmod +x /usr/local/ollama/bin/ollama
 
 # Jetson 专用包（仅 JP5 / JP6 按需叠加；Thor/JP7 不叠加 jetpack6）
-RUN set -eux; \
-  JURL=""; \
-  case "${JETPACK_MAJOR}" in \
-    6) JURL="https://ollama.com/download/ollama-linux-arm64-jetpack6.tar.zst" ;; \
-    5) JURL="https://ollama.com/download/ollama-linux-arm64-jetpack5.tar.zst" ;; \
-    *) JURL="" ;; \
-  esac; \
-  if [ -n "${JURL}" ]; then \
-    echo "Installing Jetson-specific Ollama build from ${JURL}"; \
-    for i in 1 2 3 4 5; do \
-      if [ -n "${PROXY:-}" ]; then \
-        http_proxy="${PROXY}" https_proxy="${PROXY}" \
-        HTTP_PROXY="${PROXY}" HTTPS_PROXY="${PROXY}" \
-        wget -O /tmp/ollamaj.tar.zst \
-        --timeout=30 --tries=3 \
-        --retry-on-http-error=429,500,502,503,504 \
-        --no-cache --no-cookies --server-response \
-        "${JURL}" && break; \
-      else \
-        JREAL_URL=$(wget --spider --server-response "${JURL}" 2>&1 \
-          | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
-        JDL_URL="${JURL}"; \
-        if echo "$JREAL_URL" | grep -q 'github\.com'; then \
-          echo "redirected to github.com: ${JREAL_URL}"; \
-          JDL_URL="${GH_MIRROR}/${JREAL_URL}"; \
-          echo "using github mirror: ${JDL_URL}"; \
-        fi; \
-        wget -O /tmp/ollamaj.tar.zst \
-        --timeout=30 --tries=3 \
-        --retry-on-http-error=429,500,502,503,504 \
-        --no-cache --no-cookies --server-response \
-        "${JDL_URL}" && break; \
-      fi; \
-      echo "retry $i ..."; sleep 2; \
-      rm -f /tmp/ollamaj.tar.zst; \
-    done; \
-    test -s /tmp/ollamaj.tar.zst; \
-    tar --zstd -xf /tmp/ollamaj.tar.zst -C /usr/local/ollama; \
-  else \
-    echo "No Jetson overlay package for JETPACK_MAJOR=${JETPACK_MAJOR}; skipping overlay."; \
-  fi;
+# RUN set -eux; \
+#     if [ "${JETPACK}" = "true" ]; then \
+#       JURL=""; \
+#       case "${JETPACK_MAJOR}" in \
+#         6) JURL="https://ollama.com/download/ollama-linux-arm64-jetpack6.tar.zst" ;; \
+#         5) JURL="https://ollama.com/download/ollama-linux-arm64-jetpack5.tar.zst" ;; \
+#         *) JURL="" ;; \
+#       esac; \
+#       if [ -n "${JURL}" ]; then \
+#         echo "Installing Jetson-specific Ollama build from ${JURL}"; \
+#         for i in 1 2 3 4 5; do \
+#           if [ -n "${PROXY:-}" ]; then \
+#             http_proxy="${PROXY}" https_proxy="${PROXY}" \
+#             HTTP_PROXY="${PROXY}" HTTPS_PROXY="${PROXY}" \
+#             wget -O /tmp/ollamaj.tar.zst \
+#             --timeout=30 --tries=3 \
+#             --retry-on-http-error=429,500,502,503,504 \
+#             --no-cache --no-cookies --server-response \
+#             "${JURL}" && break; \
+#           else \
+#             wget -O /tmp/ollamaj.tar.zst \
+#             --timeout=30 --tries=3 \
+#             --retry-on-http-error=429,500,502,503,504 \
+#             --no-cache --no-cookies --server-response \
+#             "${JURL}" && break; \
+#           fi; \
+#           echo "retry $i ..."; sleep 2; \
+#           rm -f /tmp/ollamaj.tar.zst; \
+#         done; \
+#         test -s /tmp/ollamaj.tar.zst; \
+#         tar --zstd -xf /tmp/ollamaj.tar.zst -C /usr/local/ollama; \
+#       else \
+#         echo "No Jetson overlay package for JETPACK_MAJOR=${JETPACK_MAJOR}; skipping overlay."; \
+#       fi; \
+#     fi
 
 # ✅ 清除构建期代理环境变量
 ENV http_proxy= \
@@ -115,7 +109,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir -i https://mirrors.ustc.edu.cn/pypi/simple -r /app/requirements.txt
 
 COPY ollama_gateway /app/ollama_gateway
-COPY start.sh /app/start.sh
+COPY scripts/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
 # 暴露端口：对外只需要 Gateway 端口

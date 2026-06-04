@@ -5,6 +5,10 @@ set -euo pipefail
 # build_image.sh
 # =========================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DOCKER_DIR="${REPO_ROOT}/docker"
+
 IMG_NAME="ollama_server"
 
 # 飞书配置
@@ -30,7 +34,6 @@ declare -A PROFILE_TO_SHEET_TITLE=(
   ["Dockerfile"]="${CUDA_PREFIX}_without_cuda"
   ["Dockerfile_l4t"]="l4t"
   ["Dockerfile_thor"]="thor_spark"
-  ["Dockerfile_cu124"]="${CUDA_PREFIX}_with_cuda"
   ["Dockerfile_cu128"]="${CUDA_PREFIX}_with_cuda"
 )
 
@@ -404,14 +407,6 @@ case "$PROFILE" in
     fi
     ;;
 
-  Dockerfile_cu124)
-    if [[ "$P" == "amd" ]]; then
-      PROFILE_TAG="amd_cu124"
-    else
-      PROFILE_TAG="arm_cu124"
-    fi
-    ;;
-
   Dockerfile_cu128)
     if [[ "$P" == "amd" ]]; then
       PROFILE_TAG="amd_cu128"
@@ -433,6 +428,12 @@ esac
 TARGET_SHEET_TITLE="${PROFILE_TO_SHEET_TITLE[$PROFILE]:-}"
 if [[ -z "$TARGET_SHEET_TITLE" ]]; then
   err "No sheet mapping configured for profile: $PROFILE"
+  exit 1
+fi
+
+PROFILE_PATH="${DOCKER_DIR}/${PROFILE}"
+if [[ ! -f "$PROFILE_PATH" ]]; then
+  err "Dockerfile profile not found: ${PROFILE_PATH}"
   exit 1
 fi
 
@@ -522,7 +523,7 @@ log "TAG=${TAG}"
 docker build \
   "${BUILD_ARGS[@]}" \
   -t "${IMAGE_URI}" \
-  -f "$PROFILE" .
+  -f "$PROFILE_PATH" "$REPO_ROOT"
 
 docker push "${IMAGE_URI}"
 

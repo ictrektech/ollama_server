@@ -1,10 +1,12 @@
+name: ollama_server_test
+
 services:
   redis:
     image: redis:7-alpine
     container_name: ollama-redis-test
     command: redis-server --requirepass "$REDIS_PASSWORD"
     env_file:
-      - .env
+      - ../.env
     volumes:
       - redis-data:/data
     ports:
@@ -18,8 +20,8 @@ services:
 
   gateway:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         OLLAMA_TAG: ${OLLAMA_TAG:-latest}
     image: ollama-gateway:${OLLAMA_TAG:-latest}
@@ -31,7 +33,7 @@ services:
     ports:
       - "11535:11535"
     env_file:
-      - .env
+      - ../.env
     environment:
       TEST_MODEL: ${TEST_MODEL:-qwen3:0.6b}
       PYTHONPATH: /app
@@ -44,7 +46,7 @@ services:
     restart: no
     volumes:
       - ollama-test:/root/.ollama
-      - .:/app
+      - ..:/app
       # - /run/jtop.sock:/run/jtop.sock
       # - /usr/bin/tegrastats:/usr/bin/tegrastats:ro
       # - /usr/lib/aarch64-linux-gnu/tegra:/usr/lib/aarch64-linux-gnu/tegra

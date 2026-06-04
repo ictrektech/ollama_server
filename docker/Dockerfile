@@ -18,7 +18,7 @@ ENV PYTHON_VERSION=${PYTHON_VERSION} \
     PATH=/opt/venv/bin:$PATH \
     UV_PYTHON=/opt/venv/bin/python
 
-COPY install_python.sh ${TMP}/
+COPY scripts/install_python.sh ${TMP}/
 RUN PROXY=${PROXY} ${TMP}/install_python.sh
 
 # Set PYTHON_GIL=0 for free-threaded builds
@@ -30,7 +30,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN uv pip install --no-cache --python /opt/venv/bin/python -r /app/requirements.txt
 
-COPY start.sh /app/
+COPY scripts/start.sh /app/
 COPY ollama_gateway /app/ollama_gateway
 RUN chmod +x /app/start.sh
 
