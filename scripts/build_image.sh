@@ -9,44 +9,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DOCKER_DIR="${REPO_ROOT}/docker"
 
-IMG_NAME="ollama_server"
+DEFAULT_COMPONENT_NAME="ollama_server"
 
 # 飞书配置
 FEISHU_CONFIG_FILE="${HOME}/.feishu.json"
 FEISHU_SPREADSHEET_TOKEN="Htotsn3oahO1zxt73YMcaB1zn8e"
 
-# profile -> sheet 名称映射
-# 后续如需调整，直接改这里
-# 根据当前架构决定飞书 sheet 前缀
-case "$(uname -m)" in
-  x86_64)
-    ARCH_PREFIX="AMD"
-    ;;
-  aarch64)
-    ARCH_PREFIX="ARM"
-    ;;
-  *)
-    ARCH_PREFIX="UNKNOWN"
-    ;;
-esac
-
-declare -A PROFILE_TO_SHEET_TITLE=(
-  ["Dockerfile"]="${ARCH_PREFIX}_with_cuda"
-  ["Dockerfile_l4t"]="l4t"
-  ["Dockerfile_thor"]="thor_spark"
-  ["Dockerfile_cu128"]="${ARCH_PREFIX}_with_cuda"
+# 发布目标决定飞书 sheet 和镜像 tag 前缀，与使用哪个 Dockerfile 构建解耦。
+declare -A TARGET_TO_SHEET_TITLE=(
+  ["amd"]="AMD_with_cuda"
+  ["arm"]="ARM_with_cuda"
+  ["l4t"]="l4t"
+  ["thor"]="thor_spark"
+  ["amd_cu128"]="AMD_with_cuda"
+  ["arm_cu128"]="ARM_with_cuda"
 )
 
-
-
-PLAT="$(dpkg --print-architecture)"
-
-
-BUILD_DOCKER="docker build"
+declare -A TARGET_TO_TAG_PREFIX=(
+  ["amd"]="amd"
+  ["arm"]="arm"
+  ["l4t"]="l4t"
+  ["thor"]="thor"
+  ["amd_cu128"]="amd_cu128"
+  ["arm_cu128"]="arm_cu128"
+)
 
 echo "Ollama server will be included in the build."
 echo "Detected:"
-echo "  PLAT=$PLAT"
+echo "  ARCH=$(uname -m)"
 
 # -------------------------
 # 基础函数
@@ -65,6 +55,28 @@ require_cmd() {
     err "missing command: $1"
     exit 1
   }
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  OLLAMA_TAG=0.30.4 scripts/build_image.sh --profile Dockerfile --target arm
+  OLLAMA_TAG=0.30.4 scripts/build_image.sh --target thor --source-image ollama_server:0.30.4
+
+Options:
+  --profile FILE         Dockerfile under docker/ used to build (default: Dockerfile)
+  --target TARGET        Publish target: amd, arm, l4t, thor, amd_cu128, arm_cu128
+  --component-name NAME  Feishu column and Huawei SWR repository (default: ollama_server)
+  --sheet-title TITLE    Override the target's Feishu sheet
+  --tag-prefix PREFIX    Override the target's image tag prefix
+  --source-image IMAGE   Push an existing local image instead of rebuilding
+  --skip-build           Push ollama_server:<OLLAMA_TAG> instead of rebuilding
+  --dry-run              Print the resolved publish plan without building or pushing
+  -h, --help             Show this help
+
+The pushed image and Feishu value always match:
+  swr.cn-southwest-2.myhuaweicloud.com/ictrek/<component-name>:<tag-prefix>_<OLLAMA_TAG>
+EOF
 }
 
 read_feishu_field() {
@@ -335,24 +347,15 @@ PY
 # -------------------------
 
 PROFILE="Dockerfile"
+SKIP_BUILD=false
+DRY_RUN=false
+SOURCE_IMAGE=""
+PUBLISH_TARGET=""
+TARGET_SHEET_TITLE=""
+COMPONENT_NAME="$DEFAULT_COMPONENT_NAME"
+TAG_PREFIX=""
 
 ARCH=$(uname -m)
-
-case "$ARCH" in
-  aarch64)
-    if [[ -f "/etc/nv_tegra_release" ]] || grep -qi "nvidia" /proc/device-tree/model 2>/dev/null; then
-      ARCH_TAG="jet"
-    else
-      ARCH_TAG="arm"
-    fi
-    ;;
-  x86_64)
-    ARCH_TAG="amd"
-    ;;
-  *)
-    ARCH_TAG="unknown"
-    ;;
-esac
 
 if [[ "$ARCH" == "aarch64" ]]; then
   MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "")
@@ -383,8 +386,42 @@ while [[ $# -gt 0 ]]; do
       PROFILE="$2"
       shift 2
       ;;
+    --target)
+      PUBLISH_TARGET="$2"
+      shift 2
+      ;;
+    --sheet-title)
+      TARGET_SHEET_TITLE="$2"
+      shift 2
+      ;;
+    --component-name)
+      COMPONENT_NAME="$2"
+      shift 2
+      ;;
+    --tag-prefix)
+      TAG_PREFIX="$2"
+      shift 2
+      ;;
+    --source-image)
+      SOURCE_IMAGE="$2"
+      SKIP_BUILD=true
+      shift 2
+      ;;
+    --skip-build)
+      SKIP_BUILD=true
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
     *)
       echo "Unknown option: $1"
+      usage
       exit 1
       ;;
   esac
@@ -393,30 +430,26 @@ done
 case "$PROFILE" in
   Dockerfile)
     if [[ "$P" == "l4t" ]]; then
-      PROFILE_TAG="arm"
+      DEFAULT_TARGET="arm"
     else
-      PROFILE_TAG="${P}"
+      DEFAULT_TARGET="${P}"
     fi
     ;;
 
   Dockerfile_l4t)
-    if [[ "$P" == "l4t" ]]; then
-      PROFILE_TAG="l4t"
-    else
-      PROFILE_TAG="${P}_l4t"
-    fi
+    DEFAULT_TARGET="l4t"
     ;;
 
   Dockerfile_cu128)
     if [[ "$P" == "amd" ]]; then
-      PROFILE_TAG="amd_cu128"
+      DEFAULT_TARGET="amd_cu128"
     else
-      PROFILE_TAG="arm_cu128"
+      DEFAULT_TARGET="arm_cu128"
     fi
     ;;
 
   Dockerfile_thor)
-    PROFILE_TAG="thor"
+    DEFAULT_TARGET="thor"
     ;;
 
   *)
@@ -425,9 +458,17 @@ case "$PROFILE" in
     ;;
 esac
 
-TARGET_SHEET_TITLE="${PROFILE_TO_SHEET_TITLE[$PROFILE]:-}"
+PUBLISH_TARGET="${PUBLISH_TARGET:-$DEFAULT_TARGET}"
+TARGET_SHEET_TITLE="${TARGET_SHEET_TITLE:-${TARGET_TO_SHEET_TITLE[$PUBLISH_TARGET]:-}}"
+TAG_PREFIX="${TAG_PREFIX:-${TARGET_TO_TAG_PREFIX[$PUBLISH_TARGET]:-}}"
+
 if [[ -z "$TARGET_SHEET_TITLE" ]]; then
-  err "No sheet mapping configured for profile: $PROFILE"
+  err "No sheet configured for target '${PUBLISH_TARGET}'; use --sheet-title"
+  exit 1
+fi
+
+if [[ -z "$TAG_PREFIX" ]]; then
+  err "No tag prefix configured for target '${PUBLISH_TARGET}'; use --tag-prefix"
   exit 1
 fi
 
@@ -447,6 +488,11 @@ if [[ -n "${PROXY:-}" ]]; then
   BUILD_ARGS+=(--build-arg "PROXY=${PROXY}")
 fi
 
+if [[ "$PROFILE" == "Dockerfile" && -n "${OLLAMA_TAG:-}" ]]; then
+  echo "Using OLLAMA_TAG=${OLLAMA_TAG}"
+  BUILD_ARGS+=(--build-arg "OLLAMA_TAG=${OLLAMA_TAG}")
+fi
+
 if [[ -n "${USE_OLD_TRANSFORMERS:-}" ]]; then
   echo "Using USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}"
   BUILD_ARGS+=(--build-arg "USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}")
@@ -458,44 +504,38 @@ fi
 
 DATE=$(date +%Y%m%d)
 
-# if [[ -f "VERSION" ]]; then
-#   VERSION=$(tr -d ' \t\n\r' < VERSION)
-#   TAG="${PROFILE_TAG}_${VERSION}_${DATE}"
-#   echo "Using version from VERSION: ${VERSION}"
-# else
-#   TAG="${PROFILE_TAG}_${DATE}"
-#   echo "No VERSION file found, using default tag format."
-# fi
+require_cmd curl
+require_cmd python3
+require_cmd docker
 
-GH_API_URL="https://api.github.com/repos/ollama/ollama/releases/latest"
-OLLAMA_VERSION=$(curl -s --connect-timeout 10 "$GH_API_URL" | jq -r .tag_name | sed 's/^v//')
-if [[ -z "${OLLAMA_VERSION}" ]]; then
-  log "GitHub API unreachable, trying ghfast.top mirror to resolve version..."
-  REDIRECT_URL=$(curl -sL --connect-timeout 10 -o /dev/null -w '%{url_effective}' \
-    "https://ghfast.top/https://github.com/ollama/ollama/releases/latest")
-  OLLAMA_VERSION=$(echo "$REDIRECT_URL" | grep -oP 'tag/\Kv[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//')
-fi
-if [[ -z "${OLLAMA_VERSION}" ]]; then
-  err "Failed to get ollama version from GitHub"
+if [[ -z "${OLLAMA_TAG:-}" || "${OLLAMA_TAG}" == "latest" ]]; then
+  err "OLLAMA_TAG must be an explicit version, for example OLLAMA_TAG=0.30.4"
   exit 1
 fi
 
-TAG=${PROFILE_TAG}_${OLLAMA_VERSION}
-IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${IMG_NAME}:${TAG}"
-
-# =========================
-# docker build 参数拼装
-# =========================
-DOCKER_BUILD_ARGS=(
-    --build-arg PROXY="${PROXY:-}"
-)
+OLLAMA_VERSION="${OLLAMA_TAG#v}"
+TAG=${TAG_PREFIX}_${OLLAMA_VERSION}
+IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${COMPONENT_NAME}:${TAG}"
 
 
 export DOCKER_BUILDKIT=0
 
-require_cmd curl
-require_cmd python3
-require_cmd docker
+# -------------------------
+# 构建并推送
+# -------------------------
+
+log "PROFILE=${PROFILE}"
+log "PUBLISH_TARGET=${PUBLISH_TARGET}"
+log "TARGET_SHEET_TITLE=${TARGET_SHEET_TITLE}"
+log "COMPONENT_NAME=${COMPONENT_NAME}"
+log "TAG_PREFIX=${TAG_PREFIX}"
+log "TAG=${TAG}"
+log "IMAGE_URI=${IMAGE_URI}"
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  log "Dry run complete; no image was built or pushed and Feishu was not updated."
+  exit 0
+fi
 
 if [[ ! -f "$FEISHU_CONFIG_FILE" ]]; then
   err "Feishu config not found: $FEISHU_CONFIG_FILE"
@@ -510,20 +550,19 @@ if [[ -z "$FEISHU_APP_ID" || -z "$FEISHU_APP_SECRET" ]]; then
   exit 1
 fi
 
-# -------------------------
-# 构建并推送
-# -------------------------
-
-log "PROFILE=${PROFILE}"
-log "PROFILE_TAG=${PROFILE_TAG}"
-log "TARGET_SHEET_TITLE=${TARGET_SHEET_TITLE}"
-log "IMG_NAME=${IMG_NAME}"
-log "TAG=${TAG}"
-
-docker build \
-  "${BUILD_ARGS[@]}" \
-  -t "${IMAGE_URI}" \
-  -f "$PROFILE_PATH" "$REPO_ROOT"
+if [[ "$SKIP_BUILD" == "true" ]]; then
+  if [[ -z "$SOURCE_IMAGE" ]]; then
+    SOURCE_IMAGE="${DEFAULT_COMPONENT_NAME}:${OLLAMA_TAG:-latest}"
+  fi
+  log "SOURCE_IMAGE=${SOURCE_IMAGE}"
+  docker image inspect "$SOURCE_IMAGE" >/dev/null
+  docker tag "$SOURCE_IMAGE" "$IMAGE_URI"
+else
+  docker build \
+    "${BUILD_ARGS[@]}" \
+    -t "${IMAGE_URI}" \
+    -f "$PROFILE_PATH" "$REPO_ROOT"
+fi
 
 docker push "${IMAGE_URI}"
 
@@ -538,8 +577,8 @@ SHEET_ID="$(get_sheet_id_by_title "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$
 log "Resolved sheet: ${TARGET_SHEET_TITLE} -> ${SHEET_ID}"
 
 FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
-COMPONENT_COL="$(find_component_column_letter "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$IMG_NAME")"
-log "Resolved component column: ${IMG_NAME} -> ${COMPONENT_COL}"
+COMPONENT_COL="$(find_component_column_letter "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$COMPONENT_NAME")"
+log "Resolved component column: ${COMPONENT_NAME} -> ${COMPONENT_COL}"
 
 FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
 DATE_ROW="$(find_date_row "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$DATE")"

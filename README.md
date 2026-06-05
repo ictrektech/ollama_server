@@ -198,27 +198,54 @@ Docker 相关文件集中在 `docker/`，容器启动和构建辅助脚本集中
 
 ### Dockerfile Profiles
 
-| Profile | Feishu Sheet | Description |
-|---------|-------------|-------------|
-| `Dockerfile` | `ARM_with_cuda` / `AMD_with_cuda` | 官方 Ollama 基础镜像，配合 NVIDIA runtime 可调用显卡推理 |
-| `Dockerfile_l4t` | `l4t` | Jetson (L4T) 设备 |
-| `Dockerfile_thor` | `thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
-| `Dockerfile_cu128` | `ARM_with_cuda` / `AMD_with_cuda` | CUDA 12.8 |
+Dockerfile profile 只决定如何构建镜像，发布目标通过 `--target` 单独指定：
+
+| Profile | Description |
+|---------|-------------|
+| `Dockerfile` | 官方 Ollama 基础镜像，可用于多个平台 |
+| `Dockerfile_l4t` | Jetson (L4T) 设备 |
+| `Dockerfile_thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
+| `Dockerfile_cu128` | CUDA 12.8 |
+
+| Target | Feishu Sheet | Image Tag Prefix |
+|--------|---------------|------------------|
+| `amd` | `AMD_with_cuda` | `amd` |
+| `arm` | `ARM_with_cuda` | `arm` |
+| `l4t` | `l4t` | `l4t` |
+| `thor` | `thor_spark` | `thor` |
+| `amd_cu128` | `AMD_with_cuda` | `amd_cu128` |
+| `arm_cu128` | `ARM_with_cuda` | `arm_cu128` |
+
+飞书列名同时作为华为云 SWR 仓库名，飞书写入值与镜像 tag 保持一致。例如组件列为
+`ollama_server`、目标为 `thor`、`OLLAMA_TAG=0.30.4` 时，推送地址为：
+
+```text
+swr.cn-southwest-2.myhuaweicloud.com/ictrek/ollama_server:thor_0.30.4
+```
 
 ### Build Example
 
 ```bash
-# 构建 Thor 镜像
-bash scripts/build_image.sh --profile Dockerfile_thor
+# 使用通用 Dockerfile 构建并发布 Thor 目标
+OLLAMA_TAG=0.30.4 bash scripts/build_image.sh --profile Dockerfile --target thor
 
-# 构建 L4T 镜像
-bash scripts/build_image.sh --profile Dockerfile_l4t
+# 使用 L4T 专用 Dockerfile 构建并发布
+OLLAMA_TAG=0.30.4 bash scripts/build_image.sh --profile Dockerfile_l4t --target l4t
 
-# 使用代理构建
-PROXY=http://proxy:port bash scripts/build_image.sh --profile Dockerfile_cu128
+# 可以推送已经构建并测试过的本地镜像，--dry-run 打印预发布信息
+OLLAMA_TAG=0.30.4 bash scripts/build_image.sh \
+  --target amd \
+  --skip-build \
+  --dry-run
+
+# 只查看发布计划
+OLLAMA_TAG=0.30.4 bash scripts/build_image.sh --profile Dockerfile --target arm --dry-run
 ```
 
 构建成功后会自动推送到华为云 SWR，并写入飞书表格对应标签页。
+
+`--target` 只控制发布目标、飞书位置和镜像 tag，不会改变实际构建架构。镜像应当在对应平台
+构建和测试后发布；多个单架构镜像不能使用同一个仓库 tag，否则后推送的镜像会覆盖先前镜像。
 
 ### 手动构建
 

@@ -104,6 +104,10 @@ class TestRedisTaskStatus(unittest.TestCase):
             "model": TEST_MODEL,
             "messages": [{"role": "user", "content": "Say ok"}],
             "options": {"num_ctx": expected_num_ctx},
+            # This request only needs to load the model with the requested
+            # context. Keep generation deterministic and inexpensive.
+            "max_tokens": 8,
+            "think": False,
             "stream": False,
         }
 
@@ -115,8 +119,10 @@ class TestRedisTaskStatus(unittest.TestCase):
             )
 
             if not 200 <= response.status_code < 300:
-                print(f"[DEBUG] Upstream returned {response.status_code}: {response.text}")
-                self.fail("Chat completion request should succeed before checking context_length")
+                self.fail(
+                    "Chat completion request should succeed before checking "
+                    f"context_length; upstream returned {response.status_code}: {response.text}"
+                )
 
             ps_response = client.get(f"{OLLAMA_BASE_URL}/api/ps")
             ps_response.raise_for_status()
