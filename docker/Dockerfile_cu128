@@ -115,11 +115,6 @@ RUN chmod +x /app/start.sh
 # 暴露端口：对外只需要 Gateway 端口
 EXPOSE 11535
 
-# Redis 配置（你也可以放到 compose 里传）
-ENV REDIS_HOST=172.28.1.1 \
-    REDIS_PORT=6379 \
-    REDIS_USER=default \
-    REDIS_PASSWORD=Rr123456 \
-    UPSTREAM_BASE=http://127.0.0.1:11434
+ENV UPSTREAM_BASE=http://127.0.0.1:11434
 
 CMD ["/app/start.sh"]

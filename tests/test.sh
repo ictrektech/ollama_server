@@ -4,7 +4,6 @@ set -e
 echo "=========================================="
 echo "Running Ollama Gateway Tests"
 echo "=========================================="
-echo "REDIS_HOST: ${REDIS_HOST:-redis}"
 echo "TEST_MODEL: ${TEST_MODEL:-qwen3:0.6b}"
 echo "=========================================="
 

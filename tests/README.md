@@ -2,24 +2,24 @@
 
 本目录包含三类测试：
 
-- 单元测试：直接测试 `ollama_gateway` 模块里的辅助函数和 OpenAI/Ollama 请求响应转换，不需要启动 Redis、Ollama 或 Gateway。
-- 代理契约测试：使用 fake upstream 验证 Gateway 转发请求和处理响应的行为，不需要真实 Redis 或 Ollama。
-- 集成测试：通过 Docker Compose 启动 Redis、Ollama 和 Gateway，发送真实请求，并检查 Redis 任务状态。
+- 单元测试：直接测试 `ollama_gateway` 模块里的辅助函数和 OpenAI/Ollama 请求响应转换，不需要启动 Ollama 或 Gateway。
+- 代理契约测试：使用 fake upstream 验证 Gateway 转发请求和处理响应的行为，不需要真实 Ollama。
+- 集成测试：通过 Docker Compose 启动 Ollama 和 Gateway，并发送真实请求。
 
 ## 目录结构
 
 | 路径 | 类型 | 说明 |
 | --- | --- | --- |
-| `unit/` | 单元测试 | 测试纯函数、状态存储和请求/响应转换逻辑 |
+| `unit/` | 单元测试 | 测试纯函数、请求 ID 和请求/响应转换逻辑 |
 | `contract/` | 代理契约测试 | 使用 fake upstream 验证 Gateway 转发路径、headers、body、SSE 和断连处理 |
-| `integration/` | 集成测试 | 使用真实 Redis、Ollama 和 Gateway 验证端到端行为 |
+| `integration/` | 集成测试 | 使用真实 Ollama 和 Gateway 验证端到端行为 |
 | `test.sh` | 集成测试入口 | 容器内启动 Ollama、拉取模型、启动 Gateway、运行 unittest |
 
 ## 快速运行
 
 以下命令默认从仓库根目录执行。
 
-运行不依赖 Redis / Ollama / Docker 的快速测试：
+运行不依赖 Ollama / Docker 的快速测试：
 
 ```bash
 .venv/bin/python -m unittest discover -s tests/unit -p "test_*.py" -v
@@ -56,22 +56,21 @@ OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.y
 | 文件 | 类型 | 覆盖内容 |
 | --- | --- | --- |
 | `unit/test_task_id.py` | 单元测试 | `X-Task-Id` 透传、空值处理、自动 UUID 生成 |
-| `unit/test_gateway_helpers.py` | 单元测试 | 请求头过滤、流式识别、状态 TTL、`/v1/chat/completions -> /api/chat`、`/v1/completions -> /api/generate` 的转换 |
+| `unit/test_gateway_helpers.py` | 单元测试 | 请求头过滤、流式识别、`/v1/chat/completions -> /api/chat`、`/v1/completions -> /api/generate` 的转换 |
 | `contract/test_gateway_forwarding.py` | 代理契约测试 | 使用 fake upstream 验证 Gateway 发往 Ollama 的路径、headers、body、缺参错误、上游错误、透传路径和 SSE 结构 |
-| `unit/test_task_status_store.py` | 单元测试 | Redis 状态写入、状态索引清理节流 |
-| `integration/test_gateway_inference_status.py` | 集成测试 | 真实请求 `/v1/chat/completions`，验证 OpenAI 风格响应、Redis 最终任务状态，以及 `options.num_ctx` 是否反映到 Ollama `/api/ps` 的 `context_length` |
+| `integration/test_gateway_inference.py` | 集成测试 | 真实请求 `/v1/chat/completions`，验证 `X-Task-Id`、OpenAI 风格响应，以及 `options.num_ctx` 是否反映到 Ollama `/api/ps` 的 `context_length` |
 | `test.sh` | 集成测试入口 | 启动 Ollama、拉取模型、启动 Gateway、运行 unittest |
 
-`contract/test_gateway_forwarding.py` 不需要真实 Ollama 或 Redis，重点防止上线前漏掉这类代理问题：
+`contract/test_gateway_forwarding.py` 不需要真实 Ollama，重点防止上线前漏掉这类代理问题：
 
 - 转换请求体后仍转发原始 `Content-Length`
 - 上游路径没有转成 `/api/chat` 或 `/api/generate`
 - `options.num_ctx` 等字段没有进入 Ollama 原生请求
 - 缺少 `model`、`messages` 或 `prompt` 时仍调用上游
 - 未转换的 `/v1/*` 路径透传时携带危险协议头
-- 上游错误响应没有正确返回和记录
+- 上游错误响应没有正确返回
 - chat/completions 或 completions 流式请求没有输出 OpenAI SSE 和 `[DONE]`
-- 流式或非流式客户端断开时没有关闭上游连接并记录 `FAILED / client disconnected`
+- 流式或非流式客户端断开时没有关闭上游连接
 
 ## 集成测试流程
 
@@ -88,7 +87,7 @@ OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.y
 python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-聊天补全集成测试允许上游模型失败：如果 Ollama 返回错误，测试会验证任务状态写成 `FAILED`，不会把模型偶发错误误判为 Gateway 逻辑失败。
+聊天补全集成测试允许上游模型失败，但仍会验证响应返回了请求关联 ID。
 
 ## 常用调试
 
@@ -113,7 +112,5 @@ OLLAMA_TAG=0.30.0 docker compose --env-file .env -f docker/docker-compose-test.y
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `REDIS_HOST` | `redis` | Redis service hostname |
-| `REDIS_PASSWORD` | `.env` 中配置 | Redis 密码 |
 | `TEST_MODEL` | `qwen3:0.6b` | 集成测试使用的模型 |
 | `PYTHONPATH` | `/app` | Python module path |

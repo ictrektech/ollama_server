@@ -106,18 +106,6 @@ class BlockingSendHttpClient(FakeHttpClient):
 class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_http_client = getattr(gateway.app.state, "http_client", None)
-        self.original_set_status = gateway.set_status
-        self.original_finish_status = gateway.finish_status
-        self.status_events = []
-
-        async def fake_set_status(task_id, state, stage, message, extensions, ttl):
-            self.status_events.append((task_id, state, stage, message, extensions, ttl))
-
-        async def fake_finish_status(task_id, status_code, extensions):
-            self.status_events.append((task_id, "FINISH", status_code, extensions))
-
-        gateway.set_status = fake_set_status
-        gateway.finish_status = fake_finish_status
 
     async def asyncTearDown(self):
         if self.original_http_client is None:
@@ -127,8 +115,6 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
                 pass
         else:
             gateway.app.state.http_client = self.original_http_client
-        gateway.set_status = self.original_set_status
-        gateway.finish_status = self.original_finish_status
 
     def _json_body(self, data):
         return json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -304,7 +290,7 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIsNone(fake_client.built_request)
 
-    async def test_upstream_error_is_returned_and_recorded_as_finished(self):
+    async def test_upstream_error_is_returned_with_task_id(self):
         fake_client = FakeHttpClient(FakeUpstreamResponse(
             status_code=500,
             body=b'{"error":"upstream failed"}',
@@ -324,7 +310,7 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(resp.status_code, 500)
         self.assertEqual(resp.body, b'{"error":"upstream failed"}')
-        self.assertTrue(any(event[1] == "FINISH" and event[2] == 500 for event in self.status_events))
+        self.assertEqual(resp.headers["X-Task-Id"], "task-upstream-error")
 
     async def test_streaming_chat_completion_returns_sse_done_marker(self):
         lines = [
@@ -362,9 +348,9 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data: ", body)
         self.assertIn('"object": "chat.completion.chunk"', body)
         self.assertTrue(body.endswith("data: [DONE]\n\n"))
-        self.assertTrue(any(event[1] == "FINISH" and event[2] == 200 for event in self.status_events))
+        self.assertEqual(resp.headers["X-Task-Id"], "task-stream")
 
-    async def test_streaming_chat_client_disconnect_records_failed_status(self):
+    async def test_streaming_chat_client_disconnect_closes_upstream(self):
         fake_upstream = BlockingStreamResponse(json.dumps({
             "model": "qwen3:0.6b",
             "message": {"role": "assistant", "content": "hi"},
@@ -396,12 +382,8 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
             await task
 
         self.assertTrue(fake_upstream.closed)
-        self.assertTrue(any(
-            event[1] == "FAILED" and event[2] == "error" and event[3] == "client disconnected"
-            for event in self.status_events
-        ))
 
-    async def test_non_streaming_chat_client_disconnect_closes_upstream_and_records_failed_status(self):
+    async def test_non_streaming_chat_client_disconnect_closes_upstream(self):
         disconnected = asyncio.Event()
         fake_upstream = BlockingReadResponse()
         fake_client = FakeHttpClient(fake_upstream)
@@ -426,10 +408,6 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.status_code, 499)
         self.assertTrue(fake_upstream.closed)
-        self.assertTrue(any(
-            event[1] == "FAILED" and event[2] == "error" and event[3] == "client disconnected"
-            for event in self.status_events
-        ))
 
     async def test_non_streaming_chat_client_disconnect_cancels_upstream_send_before_headers(self):
         disconnected = asyncio.Event()
@@ -455,10 +433,6 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.status_code, 499)
         self.assertTrue(fake_client.send_cancelled.is_set())
-        self.assertTrue(any(
-            event[1] == "FAILED" and event[2] == "error" and event[3] == "client disconnected"
-            for event in self.status_events
-        ))
 
     async def test_streaming_completion_returns_sse_done_marker(self):
         lines = [
@@ -496,7 +470,7 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data: ", body)
         self.assertIn('"object": "text_completion"', body)
         self.assertTrue(body.endswith("data: [DONE]\n\n"))
-        self.assertTrue(any(event[1] == "FINISH" and event[2] == 200 for event in self.status_events))
+        self.assertEqual(resp.headers["X-Task-Id"], "task-completion-stream")
 
     async def test_unconverted_v1_path_is_passed_through_with_protocol_headers_dropped(self):
         fake_client = FakeHttpClient(FakeUpstreamResponse(

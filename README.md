@@ -1,6 +1,6 @@
 # Ollama OpenAI Gateway
 
-一个运行在 Ollama 前面的轻量任务网关。Gateway 负责 `X-Task-Id`、Redis 任务状态，并将 `/v1/chat/completions` 转换为 Ollama 原生 `/api/chat`，让 OpenAI 风格请求也能使用 Ollama 原生请求级 `options`（例如 `options.num_ctx`）。其他 `/v1/*` 接口继续透传给 Ollama。
+一个运行在 Ollama 前面的轻量 OpenAI 兼容网关。Gateway 保留 `X-Task-Id` 作为请求关联 ID，并将 `/v1/chat/completions` 转换为 Ollama 原生 `/api/chat`，让 OpenAI 风格请求也能使用 Ollama 原生请求级 `options`（例如 `options.num_ctx`）。其他 `/v1/*` 接口继续透传给 Ollama。
 
 ## 功能
 
@@ -8,9 +8,6 @@
 - OpenAI 风格 `/v1/completions` 兼容 Ollama 原生 `/api/generate`，支持请求级 `options.num_ctx`
 - 透传其他 Ollama OpenAI 风格接口：`/v1/responses`、`/v1/models`、`/v1/embeddings`、`/v1/images/generations`
 - 支持客户端传入 `X-Task-Id`；未传入时自动生成并通过响应头返回
-- Redis 保存任务状态：`PENDING -> RUNNING -> SUCCESS | FAILED`
-- `/tasks/status` 基于 Redis sorted set 返回最近更新的任务
-- 流式请求期间刷新 `RUNNING` 心跳
 - 根据上游响应自动区分普通 JSON 和 SSE 流式响应
 - Ollama 和 Gateway 在同一个镜像/容器中运行，外部只访问 Gateway 端口 `11535`
 - 增加 gateway 客户端手动中断检测，及时中断 Ollama 上游推理请求，节约算力
@@ -22,7 +19,7 @@ Client / OpenAI SDK
         |
         | http://<host>:11535/v1/...
         v
-  Ollama Gateway  ---->  Redis
+  Ollama Gateway
         |
         | http://127.0.0.1:11434
         v
@@ -36,7 +33,6 @@ Client / OpenAI SDK
 | `ollama_gateway/gateway.py` | FastAPI 入口、路由分发、上游转发、流式响应和断连处理 |
 | `ollama_gateway/openai_to_ollama.py` | 将 OpenAI 风格请求转换为 Ollama 原生 `/api/chat` / `/api/generate` 请求 |
 | `ollama_gateway/ollama_to_openai.py` | 将 Ollama 原生响应转换回 OpenAI 风格响应和 SSE chunk |
-| `ollama_gateway/task_status.py` | Redis 任务状态事件、TTL、最近任务列表和状态索引清理 |
 
 ## 兼容矩阵
 
@@ -52,7 +48,7 @@ Client / OpenAI SDK
 
 ```bash
 cp env.example .env
-# 按需修改 .env，至少设置 REDIS_PASSWORD
+# 按需修改 .env
 
 docker compose --env-file .env -f docker/docker-compose.yml up -d --build
 docker compose --env-file .env -f docker/docker-compose.yml ps
@@ -65,7 +61,6 @@ docker compose --env-file .env -f docker/docker-compose.yml logs -f gateway
 | --- | --- |
 | Gateway | `http://localhost:11535` |
 | Ollama | `127.0.0.1:11434`，仅容器内部使用 |
-| Redis | `.env` 中的 `REDIS_PORT` |
 
 ## 使用示例
 
@@ -110,54 +105,13 @@ curl http://localhost:11535/v1/completions \
   }'
 ```
 
-查询任务状态：
-
-```bash
-curl http://localhost:11535/tasks/status/demo-001
-curl "http://localhost:11535/tasks/status?limit=50"
-```
-
-`/tasks/status` 按最近更新时间倒序返回，`limit` 最大为 500。
-
-状态响应示例：
-
-```json
-{
-  "version": "1.0",
-  "event_type": "task.status.update",
-  "event_id": "c1b0c5f3-xxxx",
-  "algorithm_id": "ollama-openai",
-  "task_id": "demo-001",
-  "state": "RUNNING",
-  "stage": "streaming",
-  "message": "stream alive",
-  "extensions": {
-    "method": "POST",
-    "path": "/v1/chat/completions",
-    "stream": true,
-    "requested_stream": true,
-    "response_stream": true
-  },
-  "timestamp": 1736400000
-}
-```
-
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `REDIS_HOST` | `172.28.1.1` | Redis 地址；Docker Compose 中使用 `redis` |
-| `REDIS_PORT` | `6379` | Redis 端口 |
-| `REDIS_USER` | `default` | Redis 用户 |
-| `REDIS_PASSWORD` | 空 | Redis 密码，生产环境必须设置 |
-| `REDIS_DB` | `0` | Redis DB |
 | `UPSTREAM_BASE` | `http://127.0.0.1:11434` | Ollama 上游地址 |
 | `UPSTREAM_STARTUP_TIMEOUT_SEC` | `30` | Gateway 等待 Ollama 就绪的秒数 |
-| `TTL_RUNNING` | `3600` | `PENDING` / `RUNNING` 状态保留秒数 |
-| `TTL_DONE` | `86400` | `SUCCESS` / `FAILED` 状态保留秒数 |
-| `STATUS_INDEX_CLEANUP_INTERVAL_SEC` | `60` | Redis 状态索引过期任务清理间隔；设为 `0` 表示每次写状态都清理 |
-| `HEARTBEAT_SEC` | `10` | 流式请求心跳刷新间隔 |
-| `ALGORITHM_ID` | `ollama-openai` | 状态事件中的算法标识 |
+| `DISCONNECT_POLL_SEC` | `0.1` | 检查客户端是否断开的间隔秒数 |
 
 ## 常用命令
 
@@ -167,9 +121,6 @@ docker compose --env-file .env -f docker/docker-compose.yml logs -f gateway
 
 # 拉取模型
 docker exec ollama_server ollama pull qwen3:0.6b
-
-# 检查 Redis
-docker exec ollama-redis redis-cli -a your_password ping
 
 # 停止服务
 docker compose --env-file .env -f docker/docker-compose.yml down

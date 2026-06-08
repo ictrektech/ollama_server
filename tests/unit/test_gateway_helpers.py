@@ -4,7 +4,6 @@ import unittest
 
 import httpx
 
-import ollama_gateway.gateway as gateway
 from ollama_gateway.gateway import (
     build_ollama_chat_payload,
     build_ollama_generate_payload,
@@ -14,19 +13,10 @@ from ollama_gateway.gateway import (
     convert_ollama_generate_stream_chunk,
     is_event_stream,
     proxy_headers,
-    requested_stream,
 )
 
 
 class TestGatewayHelpers(unittest.TestCase):
-    def test_requested_stream_reads_openai_json_flag(self):
-        body = b'{"model":"qwen3:0.6b","stream":true}'
-        self.assertTrue(requested_stream(body))
-
-    def test_requested_stream_defaults_false_for_non_json(self):
-        self.assertFalse(requested_stream(b"not-json"))
-        self.assertFalse(requested_stream(b""))
-
     def test_is_event_stream_uses_response_content_type(self):
         headers = httpx.Headers({"content-type": "text/event-stream; charset=utf-8"})
         self.assertTrue(is_event_stream(headers))
@@ -51,20 +41,6 @@ class TestGatewayHelpers(unittest.TestCase):
         filtered = proxy_headers(headers, drop_host=True)
 
         self.assertEqual(filtered, {"authorization": "Bearer test"})
-
-    def test_status_index_cutoff_uses_longer_status_ttl(self):
-        original_running = gateway.TTL_RUNNING
-        original_done = gateway.TTL_DONE
-        try:
-            gateway.TTL_RUNNING = 10
-            gateway.TTL_DONE = 30
-            now = gateway.now_ts()
-            cutoff = gateway.status_index_cutoff()
-            self.assertGreaterEqual(cutoff, now - 31)
-            self.assertLessEqual(cutoff, now - 29)
-        finally:
-            gateway.TTL_RUNNING = original_running
-            gateway.TTL_DONE = original_done
 
     def test_build_ollama_chat_payload_passes_native_options(self):
         payload = build_ollama_chat_payload({

@@ -5,10 +5,9 @@ import uuid
 import asyncio
 from dataclasses import dataclass
 from contextlib import asynccontextmanager, suppress
-from typing import Optional, Dict, Any, Callable
+from typing import Dict, Any, Callable
 
 import httpx
-import redis.asyncio as aioredis
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -34,40 +33,15 @@ from .openai_to_ollama import (
     normalize_openai_messages,
     normalize_tool_calls,
 )
-from .task_status import (
-    StatusConfig,
-    TaskStatusStore,
-    make_evt as make_status_evt,
-    now_ts as status_now_ts,
-    rkey as status_rkey,
-    status_index_cutoff as task_status_index_cutoff,
-)
-
 # ---------------------------
 # Config
 # ---------------------------
 APP_VERSION = "1.0"
-EVENT_TYPE = "task.status.update"
-STATUS_INDEX_KEY = "ts:ollama:index"
 
 # Same-container upstream
 UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "http://127.0.0.1:11434").rstrip("/")
-ALGORITHM_ID = os.getenv("ALGORITHM_ID", "ollama-openai")
 UPSTREAM_STARTUP_TIMEOUT_SEC = float(os.getenv("UPSTREAM_STARTUP_TIMEOUT_SEC", "30"))
 
-REDIS_HOST = os.getenv("REDIS_HOST", "172.28.1.1")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_USER = os.getenv("REDIS_USER", "default")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-
-# TTL seconds
-TTL_RUNNING = int(os.getenv("TTL_RUNNING", "3600"))   # pending/running keep 1h
-TTL_DONE = int(os.getenv("TTL_DONE", "86400"))        # done keep 24h
-STATUS_INDEX_CLEANUP_INTERVAL_SEC = float(os.getenv("STATUS_INDEX_CLEANUP_INTERVAL_SEC", "60"))
-
-# Streaming heartbeat interval
-HEARTBEAT_SEC = float(os.getenv("HEARTBEAT_SEC", "10"))
 DISCONNECT_POLL_SEC = float(os.getenv("DISCONNECT_POLL_SEC", "0.1"))
 
 HOP_BY_HOP_HEADERS = {
@@ -87,21 +61,6 @@ HOP_BY_HOP_HEADERS = {
 class ClientDisconnectError(Exception):
     pass
 
-
-def status_config() -> StatusConfig:
-    return StatusConfig(
-        app_version=APP_VERSION,
-        event_type=EVENT_TYPE,
-        algorithm_id=ALGORITHM_ID,
-        index_key=STATUS_INDEX_KEY,
-        ttl_running=TTL_RUNNING,
-        ttl_done=TTL_DONE,
-        cleanup_interval_sec=STATUS_INDEX_CLEANUP_INTERVAL_SEC,
-    )
-
-
-def create_status_store(redis) -> TaskStatusStore:
-    return TaskStatusStore(redis, status_config())
 
 # ---------------------------
 # Lifespan
@@ -129,32 +88,18 @@ async def wait_for_upstream(client: httpx.AsyncClient) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.redis = aioredis.Redis(
-        host=REDIS_HOST,
-        port=REDIS_PORT,
-        username=REDIS_USER if REDIS_USER else None,
-        password=REDIS_PASSWORD if REDIS_PASSWORD else None,
-        db=REDIS_DB,
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5,
-    )
-    app.state.status_store = create_status_store(app.state.redis)
     app.state.http_client = httpx.AsyncClient(timeout=None)
 
     try:
-        await app.state.redis.ping()
-        print(f"Redis ready at {REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
         await wait_for_upstream(app.state.http_client)
         print(f"Gateway v{APP_VERSION} active. Proxying to {UPSTREAM_BASE}")
         yield
     finally:
         await app.state.http_client.aclose()
-        await app.state.redis.aclose()
 
 
 app = FastAPI(
-    title="Ollama OpenAI Gateway + Task Status",
+    title="Ollama OpenAI Gateway",
     version=APP_VERSION,
     lifespan=lifespan,
 )
@@ -163,64 +108,7 @@ app = FastAPI(
 # Helpers
 # ---------------------------
 def now_ts() -> int:
-    return status_now_ts()
-
-
-def rkey(task_id: str) -> str:
-    return status_rkey(task_id)
-
-
-def status_index_cutoff() -> int:
-    return task_status_index_cutoff(now_ts(), TTL_RUNNING, TTL_DONE)
-
-
-def status_store() -> TaskStatusStore:
-    store = getattr(app.state, "status_store", None)
-    if store is None:
-        store = create_status_store(app.state.redis)
-        app.state.status_store = store
-    return store
-
-
-def make_evt(
-    task_id: str,
-    state: str,
-    stage: Optional[str] = None,
-    message: Optional[str] = None,
-    progress: Optional[float] = None,
-    extensions: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    return make_status_evt(
-        task_id,
-        state,
-        APP_VERSION,
-        EVENT_TYPE,
-        ALGORITHM_ID,
-        now_ts(),
-        stage=stage,
-        message=message,
-        progress=progress,
-        extensions=extensions,
-    )
-
-
-async def write_status(task_id: str, evt: Dict[str, Any], ttl: int) -> None:
-    await status_store().write_status(task_id, evt, ttl)
-
-
-async def set_status(
-    task_id: str,
-    state: str,
-    stage: str,
-    message: str,
-    extensions: Dict[str, Any],
-    ttl: int,
-) -> None:
-    await status_store().set_status(task_id, state, stage, message, extensions, ttl)
-
-
-async def finish_status(task_id: str, status_code: int, extensions: Dict[str, Any]) -> None:
-    await status_store().finish_status(task_id, status_code, extensions)
+    return int(time.time())
 
 
 def get_task_id(req: Request) -> str:
@@ -238,26 +126,6 @@ def proxy_headers(headers, drop_host: bool = False) -> Dict[str, str]:
             continue
         out[k] = v
     return out
-
-
-def build_extensions(req: Request, requested_stream: bool) -> Dict[str, Any]:
-    return {
-        "method": req.method,
-        "path": req.url.path,
-        "query": str(req.url.query) if req.url.query else "",
-        "stream": requested_stream,
-        "requested_stream": requested_stream,
-    }
-
-
-def requested_stream(raw_body: bytes) -> bool:
-    if not raw_body:
-        return False
-    try:
-        js = json.loads(raw_body.decode("utf-8"))
-        return isinstance(js, dict) and js.get("stream") is True
-    except Exception:
-        return False
 
 
 def is_event_stream(headers: httpx.Headers) -> bool:
@@ -349,12 +217,6 @@ def build_upstream_url(path: str, query: str = "") -> str:
     return upstream_url
 
 
-def build_openai_extensions(req: Request, requested_stream: bool, upstream_path: str) -> Dict[str, Any]:
-    ext = build_extensions(req, requested_stream)
-    ext["upstream_path"] = upstream_path
-    return ext
-
-
 def parse_json_object(raw_body: bytes) -> Dict[str, Any]:
     payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
     if not isinstance(payload, dict):
@@ -389,25 +251,17 @@ def attach_task_id(resp: Response, task_id: str) -> Response:
     return resp
 
 
-def set_stream_flags(ext: Dict[str, Any], enabled: bool) -> None:
-    ext["stream"] = enabled
-    ext["response_stream"] = enabled
-
-
 async def relay_upstream_error_response(
     req: Request,
     up: httpx.Response,
     task_id: str,
     status_code: int,
-    ext: Dict[str, Any],
 ) -> Response:
     try:
         body = await read_upstream_body(req, up)
     finally:
         await up.aclose()
 
-    set_stream_flags(ext, False)
-    await finish_status(task_id, status_code, ext)
     return attach_task_id(Response(
         content=body,
         status_code=status_code,
@@ -420,22 +274,13 @@ async def stream_openai_compatible_response(
     up: httpx.Response,
     task_id: str,
     status_code: int,
-    ext: Dict[str, Any],
     response_id: str,
     created: int,
     convert_chunk: Callable[[Dict[str, Any], str, int], Dict[str, Any]],
 ) -> StreamingResponse:
-    set_stream_flags(ext, True)
-    last_hb = time.time()
-
     async def gen():
-        nonlocal last_hb
         try:
             async for line in up.aiter_lines():
-                now = time.time()
-                if now - last_hb >= HEARTBEAT_SEC:
-                    await set_status(task_id, "RUNNING", "streaming", "stream alive", ext, TTL_RUNNING)
-                    last_hb = now
                 if not line:
                     continue
 
@@ -444,16 +289,6 @@ async def stream_openai_compatible_response(
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
 
             yield b"data: [DONE]\n\n"
-            await finish_status(task_id, status_code, ext)
-        except (httpx.StreamError, httpx.ReadError) as e:
-            await set_status(task_id, "FAILED", "error", f"stream error: {type(e).__name__}", ext, TTL_DONE)
-            raise
-        except asyncio.CancelledError:
-            await set_status(task_id, "FAILED", "error", "client disconnected", ext, TTL_DONE)
-            raise
-        except Exception as e:
-            await set_status(task_id, "FAILED", "error", f"gateway error: {type(e).__name__}", ext, TTL_DONE)
-            raise
         finally:
             await up.aclose()
 
@@ -470,7 +305,6 @@ async def build_openai_response(
     up: httpx.Response,
     task_id: str,
     status_code: int,
-    ext: Dict[str, Any],
     response_id: str,
     created: int,
     convert_response: Callable[[Dict[str, Any], str, int], Dict[str, Any]],
@@ -480,42 +314,32 @@ async def build_openai_response(
     finally:
         await up.aclose()
 
-    set_stream_flags(ext, False)
     try:
         ollama_response = parse_upstream_json_object(body)
         openai_response = convert_response(ollama_response, response_id, created)
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
-        await set_status(task_id, "FAILED", "error", f"response transform error: {type(e).__name__}", ext, TTL_DONE)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         raise HTTPException(status_code=502, detail="Bad gateway")
 
-    await finish_status(task_id, status_code, ext)
     return attach_task_id(JSONResponse(content=openai_response, status_code=status_code), task_id)
 
 
 async def forward_openai_compatible(req: Request, task_id: str, route: OpenAICompatRoute) -> Response:
     upstream_url = build_upstream_url(route.upstream_path)
-    ext = build_openai_extensions(req, requested_stream=False, upstream_path=route.upstream_path)
 
     try:
-        await set_status(task_id, "PENDING", "accepted", "request accepted", ext, TTL_RUNNING)
-
         raw_body = await req.body()
         try:
             openai_payload = parse_json_object(raw_body)
             ollama_payload = route.build_ollama_payload(openai_payload)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
-            await set_status(task_id, "FAILED", "error", str(e), ext, TTL_DONE)
             raise HTTPException(status_code=400, detail=str(e))
-
-        ext = build_openai_extensions(req, bool(ollama_payload.get("stream")), route.upstream_path)
-        await set_status(task_id, "RUNNING", "forwarding", "forwarding to upstream", ext, TTL_RUNNING)
 
         request = build_json_upstream_request(req, upstream_url, ollama_payload)
         up = await send_upstream(req, request)
         status_code = up.status_code
 
         if status_code < 200 or status_code >= 300:
-            return await relay_upstream_error_response(req, up, task_id, status_code, ext)
+            return await relay_upstream_error_response(req, up, task_id, status_code)
 
         response_id = f"{route.response_id_prefix}-{uuid.uuid4().hex}"
         created = now_ts()
@@ -525,7 +349,6 @@ async def forward_openai_compatible(req: Request, task_id: str, route: OpenAICom
                 up,
                 task_id,
                 status_code,
-                ext,
                 response_id,
                 created,
                 route.convert_stream_chunk,
@@ -536,21 +359,15 @@ async def forward_openai_compatible(req: Request, task_id: str, route: OpenAICom
             up,
             task_id,
             status_code,
-            ext,
             response_id,
             created,
             route.convert_response,
         )
 
-    except httpx.RequestError as e:
-        await set_status(task_id, "FAILED", "error", f"upstream request error: {type(e).__name__}", ext, TTL_DONE)
+    except httpx.RequestError:
         raise HTTPException(status_code=502, detail="Bad gateway")
     except ClientDisconnectError:
-        await set_status(task_id, "FAILED", "error", "client disconnected", ext, TTL_DONE)
         raise HTTPException(status_code=499, detail="Client disconnected")
-    except Exception as e:
-        await set_status(task_id, "FAILED", "error", f"gateway error: {type(e).__name__}", ext, TTL_DONE)
-        raise
 
 
 CHAT_COMPLETIONS_ROUTE = OpenAICompatRoute(
@@ -572,35 +389,13 @@ COMPLETIONS_ROUTE = OpenAICompatRoute(
 
 
 # ---------------------------
-# Status APIs (Pull)
-# ---------------------------
-@app.get("/tasks/status/{task_id}")
-async def get_status(task_id: str):
-    status = await status_store().get_status(task_id)
-    if not status:
-        raise HTTPException(status_code=404, detail="task_id not found")
-    return JSONResponse(content=status)
-
-
-@app.get("/tasks/status")
-async def list_status(limit: int = 50):
-    return await status_store().list_status(limit)
-
-
-# ---------------------------
 # Proxy core
 # ---------------------------
 async def forward(req: Request, task_id: str) -> Response:
     upstream_url = build_upstream_url(req.url.path, str(req.url.query))
 
-    ext = build_extensions(req, requested_stream=False)
-
     try:
-        await set_status(task_id, "PENDING", "accepted", "request accepted", ext, TTL_RUNNING)
-
         raw_body = await req.body()
-        ext = build_extensions(req, requested_stream(raw_body))
-        await set_status(task_id, "RUNNING", "forwarding", "forwarding to upstream", ext, TTL_RUNNING)
 
         request = app.state.http_client.build_request(
             method=req.method,
@@ -612,33 +407,13 @@ async def forward(req: Request, task_id: str) -> Response:
         status_code = up.status_code
         resp_headers = proxy_headers(up.headers)
         response_stream = is_event_stream(up.headers)
-        ext["stream"] = response_stream
-        ext["response_stream"] = response_stream
 
         if response_stream:
-            last_hb = time.time()
-
             async def gen():
-                nonlocal last_hb
                 try:
                     async for chunk in up.aiter_bytes():
-                        now = time.time()
-                        if now - last_hb >= HEARTBEAT_SEC:
-                            await set_status(task_id, "RUNNING", "streaming", "stream alive", ext, TTL_RUNNING)
-                            last_hb = now
                         if chunk:
                             yield chunk
-
-                    await finish_status(task_id, status_code, ext)
-                except (httpx.StreamError, httpx.ReadError) as e:
-                    await set_status(task_id, "FAILED", "error", f"stream error: {type(e).__name__}", ext, TTL_DONE)
-                    raise
-                except asyncio.CancelledError:
-                    await set_status(task_id, "FAILED", "error", "client disconnected", ext, TTL_DONE)
-                    raise
-                except Exception as e:
-                    await set_status(task_id, "FAILED", "error", f"gateway error: {type(e).__name__}", ext, TTL_DONE)
-                    raise
                 finally:
                     await up.aclose()
 
@@ -651,7 +426,6 @@ async def forward(req: Request, task_id: str) -> Response:
         finally:
             await up.aclose()
 
-        await finish_status(task_id, status_code, ext)
         resp = Response(
             content=body,
             status_code=status_code,
@@ -661,15 +435,10 @@ async def forward(req: Request, task_id: str) -> Response:
         resp.headers["X-Task-Id"] = task_id
         return resp
 
-    except httpx.RequestError as e:
-        await set_status(task_id, "FAILED", "error", f"upstream request error: {type(e).__name__}", ext, TTL_DONE)
+    except httpx.RequestError:
         raise HTTPException(status_code=502, detail="Bad gateway")
     except ClientDisconnectError:
-        await set_status(task_id, "FAILED", "error", "client disconnected", ext, TTL_DONE)
         raise HTTPException(status_code=499, detail="Client disconnected")
-    except Exception as e:
-        await set_status(task_id, "FAILED", "error", f"gateway error: {type(e).__name__}", ext, TTL_DONE)
-        raise
 
 
 async def forward_chat_completions(req: Request, task_id: str) -> Response:
