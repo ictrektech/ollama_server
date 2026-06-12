@@ -29,8 +29,12 @@ export UV_INSTALLER_GITHUB_BASE_URL="https://ghfast.top/https://github.com"
 export UV_DEFAULT_INDEX="https://mirrors.aliyun.com/pypi/simple"
 export UV_PYTHON_INSTALL_MIRROR="https://ghfast.top/https://github.com/astral-sh/python-build-standalone/releases/download"
 
-# Install uv
-curl -fsSL https://astral.sh/uv/install.sh | sh
+# Install uv from the mirror first, then retry with the installer's official sources.
+if ! curl --retry 3 --retry-all-errors -fsSL https://astral.sh/uv/install.sh | sh; then
+  echo "uv mirror failed; retrying with official sources"
+  unset UV_INSTALLER_GITHUB_BASE_URL
+  curl --retry 3 --retry-all-errors -fsSL https://astral.sh/uv/install.sh | sh
+fi
 
 # Ensure uv is in PATH (move binary to /usr/local/bin for non-login environments)
 if [ -f "${HOME}/.local/bin/uv" ]; then
