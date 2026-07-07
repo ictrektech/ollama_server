@@ -60,8 +60,9 @@ require_cmd() {
 usage() {
   cat <<'EOF'
 Usage:
-  OLLAMA_TAG=0.30.4 scripts/build_image.sh --profile Dockerfile --target arm
-  OLLAMA_TAG=0.30.4 scripts/build_image.sh --target thor --source-image ollama_server:0.30.4
+  scripts/build_image.sh --profile Dockerfile --target arm
+  scripts/build_image.sh --target thor --source-image ollama_server:0.31.1
+  OLLAMA_TAG=0.31.1 scripts/build_image.sh --profile Dockerfile --target arm
 
 Options:
   --profile FILE         Dockerfile under docker/ used to build (default: Dockerfile)
@@ -76,6 +77,8 @@ Options:
 
 The pushed image and Feishu value always match:
   swr.cn-southwest-2.myhuaweicloud.com/ictrek/<component-name>:<tag-prefix>_<OLLAMA_TAG>
+
+If OLLAMA_TAG is empty or latest, the script detects the latest Ollama release.
 EOF
 }
 
@@ -479,26 +482,6 @@ if [[ ! -f "$PROFILE_PATH" ]]; then
 fi
 
 # -------------------------
-# build args
-# -------------------------
-
-BUILD_ARGS=()
-if [[ -n "${PROXY:-}" ]]; then
-  echo "Using PROXY=${PROXY}"
-  BUILD_ARGS+=(--build-arg "PROXY=${PROXY}")
-fi
-
-if [[ "$PROFILE" == "Dockerfile" && -n "${OLLAMA_TAG:-}" ]]; then
-  echo "Using OLLAMA_TAG=${OLLAMA_TAG}"
-  BUILD_ARGS+=(--build-arg "OLLAMA_TAG=${OLLAMA_TAG}")
-fi
-
-if [[ -n "${USE_OLD_TRANSFORMERS:-}" ]]; then
-  echo "Using USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}"
-  BUILD_ARGS+=(--build-arg "USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}")
-fi
-
-# -------------------------
 # 版本与 tag
 # -------------------------
 
@@ -508,14 +491,47 @@ require_cmd curl
 require_cmd python3
 require_cmd docker
 
+detect_latest_ollama_tag() {
+  local url
+  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    https://github.com/ollama/ollama/releases/latest 2>/dev/null || true)"
+  if [[ ! "$url" =~ /v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+      https://ghfast.top/https://github.com/ollama/ollama/releases/latest 2>/dev/null || true)"
+  fi
+  [[ "$url" =~ /v([0-9]+\.[0-9]+\.[0-9]+) ]] || return 1
+  echo "${BASH_REMATCH[1]}"
+}
+
 if [[ -z "${OLLAMA_TAG:-}" || "${OLLAMA_TAG}" == "latest" ]]; then
-  err "OLLAMA_TAG must be an explicit version, for example OLLAMA_TAG=0.30.4"
-  exit 1
+  OLLAMA_TAG="$(detect_latest_ollama_tag)" || {
+    err "failed to detect latest Ollama release version"
+    exit 1
+  }
+  log "Detected latest OLLAMA_TAG=${OLLAMA_TAG}"
 fi
 
 OLLAMA_VERSION="${OLLAMA_TAG#v}"
 TAG=${TAG_PREFIX}_${OLLAMA_VERSION}
 IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${COMPONENT_NAME}:${TAG}"
+
+# -------------------------
+# build args
+# -------------------------
+
+BUILD_ARGS=()
+if [[ -n "${PROXY:-}" ]]; then
+  echo "Using PROXY=${PROXY}"
+  BUILD_ARGS+=(--build-arg "PROXY=${PROXY}")
+fi
+
+echo "Using OLLAMA_TAG=${OLLAMA_TAG}"
+BUILD_ARGS+=(--build-arg "OLLAMA_TAG=${OLLAMA_TAG}")
+
+if [[ -n "${USE_OLD_TRANSFORMERS:-}" ]]; then
+  echo "Using USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}"
+  BUILD_ARGS+=(--build-arg "USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}")
+fi
 
 
 export DOCKER_BUILDKIT=0

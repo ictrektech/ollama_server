@@ -4,6 +4,7 @@ ARG ARCH=arm64
 ARG JETPACK=false
 ARG JETPACK_MAJOR=unknown
 ARG PROXY
+ARG OLLAMA_TAG=latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV OLLAMA_LLM_LIBRARY=cuda_v13
@@ -19,32 +20,33 @@ RUN chmod 1777 /tmp && apt-get update && apt-get install -y \
 ARG GH_MIRROR=https://ghfast.top
 
 RUN set -eux; \
-    URL="https://ollama.com/download/ollama-linux-${ARCH}.tar.zst"; \
+    if [ "${OLLAMA_TAG}" = "latest" ]; then \
+      URL="https://ollama.com/download/ollama-linux-${ARCH}.tar.zst"; \
+    else \
+      URL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_TAG#v}/ollama-linux-${ARCH}.tar.zst"; \
+    fi; \
     echo "Downloading Ollama tar.zst from ${URL} ..."; \
     for i in 1 2 3 4 5; do \
       if [ -n "${PROXY:-}" ]; then \
         echo "using proxy ${PROXY:-<unset>}"; \
-        http_proxy="${PROXY:-}" https_proxy="${PROXY:-}" \
-        HTTP_PROXY="${PROXY:-}" HTTPS_PROXY="${PROXY:-}" \
-        wget -O /tmp/ollama.tar.zst \
-        --timeout=30 --tries=3 \
-        --retry-on-http-error=429,500,502,503,504 \
-        --no-cache --no-cookies --server-response \
-        "$URL" && break; \
-      else \
-        REAL_URL=$(wget --spider --server-response "$URL" 2>&1 \
-          | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
-        DL_URL="$URL"; \
-        if echo "$REAL_URL" | grep -q 'github\.com'; then \
-          echo "redirected to github.com: ${REAL_URL}"; \
-          DL_URL="${GH_MIRROR}/${REAL_URL}"; \
-          echo "using github mirror: ${DL_URL}"; \
+        if http_proxy="${PROXY:-}" https_proxy="${PROXY:-}" HTTP_PROXY="${PROXY:-}" HTTPS_PROXY="${PROXY:-}" \
+          wget -O /tmp/ollama.tar.zst --timeout=30 --tries=3 \
+          --retry-on-http-error=429,500,502,503,504 --no-cache --no-cookies --server-response "$URL"; then \
+          break; \
         fi; \
-        wget -O /tmp/ollama.tar.zst \
-        --timeout=30 --tries=3 \
-        --retry-on-http-error=429,500,502,503,504 \
-        --no-cache --no-cookies --server-response \
-        "$DL_URL" && break; \
+      else \
+        if wget -O /tmp/ollama.tar.zst --timeout=30 --tries=3 \
+          --retry-on-http-error=429,500,502,503,504 --no-cache --no-cookies --server-response "$URL"; then \
+          break; \
+        fi; \
+      fi; \
+      REAL_URL=$(wget --spider --server-response "$URL" 2>&1 \
+        | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
+      if echo "$URL $REAL_URL" | grep -q 'github\.com'; then \
+        MIRROR_URL="${GH_MIRROR}/${REAL_URL:-$URL}"; \
+        echo "using github mirror: ${MIRROR_URL}"; \
+        wget -O /tmp/ollama.tar.zst --timeout=30 --tries=3 \
+          --retry-on-http-error=429,500,502,503,504 --no-cache --no-cookies --server-response "$MIRROR_URL" && break; \
       fi; \
       echo "retry $i ..."; sleep 2; \
       rm -f /tmp/ollama.tar.zst; \

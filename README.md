@@ -167,30 +167,35 @@ Dockerfile profile 只决定如何构建镜像，发布目标通过 `--target` �
 | `amd_cu128` | `AMD_with_cuda` | `amd_cu128` |
 | `arm_cu128` | `ARM_with_cuda` | `arm_cu128` |
 
-飞书列名同时作为华为云 SWR 仓库名，飞书写入值与镜像 tag 保持一致。例如组件列为
-`ollama_server`、目标为 `thor`、`OLLAMA_TAG=0.30.4` 时，推送地址为：
+飞书列名同时作为华为云 SWR 仓库名，飞书写入值与镜像 tag 保持一致。未设置
+`OLLAMA_TAG` 或设置为 `latest` 时，构建脚本会自动检测 Ollama 最新 release；GitHub
+检测失败时会改用 `ghfast.top`。例如组件列为 `ollama_server`、目标为 `thor`、检测到
+`OLLAMA_TAG=0.31.1` 时，推送地址为：
 
 ```text
-swr.cn-southwest-2.myhuaweicloud.com/ictrek/ollama_server:thor_0.30.4
+swr.cn-southwest-2.myhuaweicloud.com/ictrek/ollama_server:thor_0.31.1
 ```
 
 ### Build Example
 
 ```bash
-# 使用通用 Dockerfile 构建并发布 Thor 目标
-OLLAMA_TAG=0.30.4 bash scripts/build_image.sh --profile Dockerfile --target thor
+# 自动检测 Ollama 最新 release，使用通用 Dockerfile 构建并发布 Thor 目标
+bash scripts/build_image.sh --profile Dockerfile --target thor
 
-# 使用 L4T 专用 Dockerfile 构建并发布
-OLLAMA_TAG=0.30.4 bash scripts/build_image.sh --profile Dockerfile_l4t --target l4t
+# 使用 L4T 专用 Dockerfile 构建并发布，版本同样自动检测
+bash scripts/build_image.sh --profile Dockerfile_l4t --target l4t
 
 # 可以推送已经构建并测试过的本地镜像，--dry-run 打印预发布信息
-OLLAMA_TAG=0.30.4 bash scripts/build_image.sh \
+bash scripts/build_image.sh \
   --target amd \
   --skip-build \
   --dry-run
 
 # 只查看发布计划
-OLLAMA_TAG=0.30.4 bash scripts/build_image.sh --profile Dockerfile --target arm --dry-run
+bash scripts/build_image.sh --profile Dockerfile --target arm --dry-run
+
+# 需要复现指定版本时，也可以显式指定
+OLLAMA_TAG=0.31.1 bash scripts/build_image.sh --profile Dockerfile --target arm
 ```
 
 构建成功后会自动推送到华为云 SWR，并写入飞书表格对应标签页。
@@ -202,8 +207,8 @@ OLLAMA_TAG=0.30.4 bash scripts/build_image.sh --profile Dockerfile --target arm 
 
 ```bash
 docker build \
-  --build-arg OLLAMA_TAG=0.30.4 \
+  --build-arg OLLAMA_TAG=0.31.1 \
   --build-arg PYTHON_VERSION=3.12 \
-  -t ollama_server:0.30.4 \
+  -t ollama_server:0.31.1 \
   -f docker/Dockerfile .
 ```
