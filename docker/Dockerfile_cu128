@@ -1,6 +1,7 @@
-FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
+ARG CUDA_BASE_IMAGE=swr.cn-southwest-2.myhuaweicloud.com/ictrek-arm/cuda:12.8.1-runtime-ubuntu22.04
+FROM ${CUDA_BASE_IMAGE}
 
-ARG ARCH=amd64
+ARG TARGETARCH
 ARG JETPACK=false
 ARG JETPACK_MAJOR=unknown
 ARG OLLAMA_TAG=latest
@@ -20,9 +21,9 @@ ARG GH_MIRROR=https://ghfast.top
 
 RUN set -eux; \
     if [ "${OLLAMA_TAG}" = "latest" ]; then \
-      URL="https://ollama.com/download/ollama-linux-${ARCH}.tar.zst"; \
+      URL="https://ollama.com/download/ollama-linux-${TARGETARCH}.tar.zst"; \
     else \
-      URL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_TAG#v}/ollama-linux-${ARCH}.tar.zst"; \
+      URL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_TAG#v}/ollama-linux-${TARGETARCH}.tar.zst"; \
     fi; \
     echo "Downloading Ollama tar.zst from ${URL} ..."; \
     for i in 1 2 3 4 5; do \

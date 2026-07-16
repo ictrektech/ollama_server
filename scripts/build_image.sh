@@ -72,6 +72,7 @@ Options:
   --tag-prefix PREFIX    Override the target's image tag prefix
   --source-image IMAGE   Push an existing local image instead of rebuilding
   --skip-build           Push ollama_server:<OLLAMA_TAG> instead of rebuilding
+  --builder BUILDER      Build backend: auto, buildx, docker (default: auto)
   --dry-run              Print the resolved publish plan without building or pushing
   -h, --help             Show this help
 
@@ -353,6 +354,7 @@ PROFILE="Dockerfile"
 SKIP_BUILD=false
 DRY_RUN=false
 SOURCE_IMAGE=""
+BUILDER="auto"
 PUBLISH_TARGET=""
 TARGET_SHEET_TITLE=""
 COMPONENT_NAME="$DEFAULT_COMPONENT_NAME"
@@ -361,6 +363,7 @@ TAG_PREFIX=""
 ARCH=$(uname -m)
 
 if [[ "$ARCH" == "aarch64" ]]; then
+  BUILD_PLATFORM="linux/arm64"
   MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "")
 
   if [[ -f "/etc/nv_tegra_release" ]]; then
@@ -377,9 +380,11 @@ if [[ "$ARCH" == "aarch64" ]]; then
   fi
 
 elif [[ "$ARCH" == "x86_64" ]]; then
+  BUILD_PLATFORM="linux/amd64"
   P="amd"
 
 else
+  BUILD_PLATFORM=""
   P="unknown"
 fi
 
@@ -414,6 +419,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_BUILD=true
       shift
       ;;
+    --builder)
+      BUILDER="$2"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN=true
       shift
@@ -429,6 +438,28 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "$BUILDER" in
+  auto)
+    if docker buildx version >/dev/null 2>&1; then
+      BUILDER="buildx"
+    else
+      BUILDER="docker"
+    fi
+    ;;
+  buildx)
+    docker buildx version >/dev/null 2>&1 || {
+      err "buildx was requested but is not available"
+      exit 1
+    }
+    ;;
+  docker)
+    ;;
+  *)
+    err "Unsupported builder: ${BUILDER}; expected auto, buildx, or docker"
+    exit 1
+    ;;
+esac
 
 case "$PROFILE" in
   Dockerfile)
@@ -520,9 +551,17 @@ IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${COMPONENT_NAME}:${TAG}"
 # -------------------------
 
 BUILD_ARGS=()
+PLATFORM_ARGS=()
+if [[ -n "$BUILD_PLATFORM" ]]; then
+  PLATFORM_ARGS+=(--platform "$BUILD_PLATFORM")
+fi
 if [[ -n "${PROXY:-}" ]]; then
   echo "Using PROXY=${PROXY}"
   BUILD_ARGS+=(--build-arg "PROXY=${PROXY}")
+fi
+if [[ -n "${CUDA_BASE_IMAGE:-}" ]]; then
+  echo "Using CUDA_BASE_IMAGE=${CUDA_BASE_IMAGE}"
+  BUILD_ARGS+=(--build-arg "CUDA_BASE_IMAGE=${CUDA_BASE_IMAGE}")
 fi
 
 echo "Using OLLAMA_TAG=${OLLAMA_TAG}"
@@ -533,8 +572,6 @@ if [[ -n "${USE_OLD_TRANSFORMERS:-}" ]]; then
   BUILD_ARGS+=(--build-arg "USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}")
 fi
 
-
-export DOCKER_BUILDKIT=0
 
 # -------------------------
 # 构建并推送
@@ -547,6 +584,8 @@ log "COMPONENT_NAME=${COMPONENT_NAME}"
 log "TAG_PREFIX=${TAG_PREFIX}"
 log "TAG=${TAG}"
 log "IMAGE_URI=${IMAGE_URI}"
+log "BUILDER=${BUILDER}"
+log "BUILD_PLATFORM=${BUILD_PLATFORM:-auto}"
 
 if [[ "$DRY_RUN" == "true" ]]; then
   log "Dry run complete; no image was built or pushed and Feishu was not updated."
@@ -574,10 +613,20 @@ if [[ "$SKIP_BUILD" == "true" ]]; then
   docker image inspect "$SOURCE_IMAGE" >/dev/null
   docker tag "$SOURCE_IMAGE" "$IMAGE_URI"
 else
-  docker build \
-    "${BUILD_ARGS[@]}" \
-    -t "${IMAGE_URI}" \
-    -f "$PROFILE_PATH" "$REPO_ROOT"
+  if [[ "$BUILDER" == "buildx" ]]; then
+    docker buildx build \
+      --load \
+      "${PLATFORM_ARGS[@]}" \
+      "${BUILD_ARGS[@]}" \
+      -t "${IMAGE_URI}" \
+      -f "$PROFILE_PATH" "$REPO_ROOT"
+  else
+    docker build \
+      "${PLATFORM_ARGS[@]}" \
+      "${BUILD_ARGS[@]}" \
+      -t "${IMAGE_URI}" \
+      -f "$PROFILE_PATH" "$REPO_ROOT"
+  fi
 fi
 
 docker push "${IMAGE_URI}"

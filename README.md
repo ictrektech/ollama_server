@@ -158,6 +158,11 @@ Dockerfile profile 只决定如何构建镜像，发布目标通过 `--target` �
 | `Dockerfile_thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
 | `Dockerfile_cu128` | CUDA 12.8 |
 
+`Dockerfile_cu128` 默认使用内部 ARM64 基础镜像
+`swr.cn-southwest-2.myhuaweicloud.com/ictrek-arm/cuda:12.8.1-runtime-ubuntu22.04`，
+并根据构建平台的 `TARGETARCH` 下载对应架构的 Ollama 包。
+如需构建其他架构，可通过 `CUDA_BASE_IMAGE=<image>` 覆盖该默认基础镜像。
+
 | Target | Feishu Sheet | Image Tag Prefix |
 |--------|---------------|------------------|
 | `amd` | `AMD_with_cuda` | `amd` |
@@ -194,11 +199,22 @@ bash scripts/build_image.sh \
 # 只查看发布计划
 bash scripts/build_image.sh --profile Dockerfile --target arm --dry-run
 
+# 自动优先使用 buildx 并通过 --load 写入本机镜像库；无 buildx 时回退到 docker build
+bash scripts/build_image.sh --profile Dockerfile_cu128 --target arm_cu128
+
+# 需要固定构建后端时可显式指定 buildx 或 docker
+bash scripts/build_image.sh --profile Dockerfile_cu128 --target arm_cu128 --builder docker
+
 # 需要复现指定版本时，也可以显式指定
 OLLAMA_TAG=0.31.1 bash scripts/build_image.sh --profile Dockerfile --target arm
 ```
 
 构建成功后会自动推送到华为云 SWR，并写入飞书表格对应标签页。
+
+构建后端默认设为 `auto`：检测到 buildx 时执行 `docker buildx build --load`，确保单平台镜像
+加载到本机 Docker image store 后再推送；未安装 buildx 时自动回退到 `docker build`。也可以用
+`--builder buildx` 或 `--builder docker` 显式指定。预先拉取到本机的基础镜像会由对应构建后端复用。
+脚本还会根据构建主机传入 `linux/arm64` 或 `linux/amd64`，避免本地同名基础镜像的架构不匹配。
 
 `--target` 只控制发布目标、飞书位置和镜像 tag，不会改变实际构建架构。镜像应当在对应平台
 构建和测试后发布；多个单架构镜像不能使用同一个仓库 tag，否则后推送的镜像会覆盖先前镜像。
