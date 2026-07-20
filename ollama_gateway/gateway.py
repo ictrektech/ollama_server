@@ -573,6 +573,7 @@ COMPLETIONS_ROUTE = OpenAICompatRoute(
 async def forward(req: Request, task_id: str) -> Response:
     upstream_url = build_upstream_url(req.url.path, str(req.url.query))
     tracked_slot_id = ""
+    raw_payload: Dict[str, Any] = {}
 
     try:
         raw_body = await req.body()
@@ -595,17 +596,36 @@ async def forward(req: Request, task_id: str) -> Response:
         status_code = up.status_code
         resp_headers = proxy_headers(up.headers)
         response_stream = is_event_stream(up.headers)
+        raw_generation_stream = bool(tracked_slot_id and raw_payload.get("stream", True) is not False)
 
-        if response_stream:
+        if response_stream or raw_generation_stream:
             async def gen():
+                pending = b""
                 try:
                     async for chunk in up.aiter_bytes():
                         if chunk:
+                            if tracked_slot_id:
+                                pending += chunk
+                                while b"\n" in pending:
+                                    line, pending = pending.split(b"\n", 1)
+                                    if line.strip():
+                                        with suppress(json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                                            await slot_tracker.update_from_ollama_chunk(
+                                                tracked_slot_id,
+                                                parse_upstream_json_object(line.strip()),
+                                            )
                             yield chunk
                 finally:
                     await up.aclose()
+                    if tracked_slot_id:
+                        await slot_tracker.end(tracked_slot_id)
 
-            resp = StreamingResponse(gen(), status_code=status_code, headers=resp_headers)
+            resp = StreamingResponse(
+                gen(),
+                status_code=status_code,
+                headers=resp_headers,
+                media_type=up.headers.get("content-type"),
+            )
             resp.headers["X-Task-Id"] = task_id
             return resp
 

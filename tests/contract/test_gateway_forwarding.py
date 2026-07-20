@@ -44,6 +44,13 @@ class FakeUpstreamResponse:
         for line in self._lines:
             yield line
 
+    async def aiter_bytes(self):
+        if self._lines:
+            for line in self._lines:
+                yield (line + "\n").encode("utf-8")
+        else:
+            yield self._body
+
 
 class BlockingStreamResponse(FakeUpstreamResponse):
     def __init__(self, first_line):
@@ -503,6 +510,56 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
             {"model": "qwen3:0.6b", "input": "hello"},
         )
         self.assertEqual(json.loads(resp.body.decode("utf-8")), {"object": "list", "data": []})
+
+    async def test_native_ollama_chat_stream_is_passed_through_and_tracked(self):
+        lines = [
+            json.dumps({
+                "model": "qwen3:0.6b",
+                "message": {"role": "assistant", "content": "hi"},
+                "done": False,
+            }),
+            json.dumps({
+                "model": "qwen3:0.6b",
+                "message": {"role": "assistant", "content": ""},
+                "done": True,
+                "prompt_eval_count": 2,
+                "prompt_eval_duration": 1_000_000_000,
+                "eval_count": 4,
+                "eval_duration": 2_000_000_000,
+            }),
+        ]
+        fake_client = FakeHttpClient(FakeUpstreamResponse(
+            headers={"content-type": "application/x-ndjson"},
+            lines=lines,
+        ))
+        gateway.app.state.http_client = fake_client
+        req = FakeRequest(
+            "/api/chat",
+            self._json_body({
+                "model": "qwen3:0.6b",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            }),
+            headers=self._client_headers(),
+        )
+
+        resp = await gateway.forward(req, "task-native-chat")
+        body = b"".join([chunk async for chunk in resp.body_iterator]).decode("utf-8")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.media_type, "application/x-ndjson")
+        self.assertEqual(body, "\n".join(lines) + "\n")
+        self.assertEqual(fake_client.built_request["url"], f"{gateway.UPSTREAM_BASE}/api/chat")
+        self.assertEqual(
+            json.loads(fake_client.built_request["content"].decode("utf-8")),
+            {
+                "model": "qwen3:0.6b",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+        snapshot = await gateway.slot_tracker.snapshot()
+        self.assertEqual(snapshot["slot_usage"], "0/1")
 
 
 if __name__ == "__main__":
