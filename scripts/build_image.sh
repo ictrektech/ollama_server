@@ -14,25 +14,33 @@ DEFAULT_COMPONENT_NAME="ollama_server"
 # 飞书配置
 FEISHU_CONFIG_FILE="${HOME}/.feishu.json"
 FEISHU_SPREADSHEET_TOKEN="Htotsn3oahO1zxt73YMcaB1zn8e"
+GITHUB_MIRRORS="${GITHUB_MIRRORS:-https://gh-proxy.com https://ghfast.top https://gh.llkk.cc}"
 
 # 发布目标决定飞书 sheet 和镜像 tag 前缀，与使用哪个 Dockerfile 构建解耦。
-declare -A TARGET_TO_SHEET_TITLE=(
-  ["amd"]="AMD_with_cuda"
-  ["arm"]="ARM_with_cuda"
-  ["l4t"]="l4t"
-  ["thor"]="thor_spark"
-  ["amd_cu128"]="AMD_with_cuda"
-  ["arm_cu128"]="ARM_with_cuda"
-)
+# 一个目标可以写入多个 sheet，避免 ARM 通用镜像只更新部分标签页。
+target_sheet_titles() {
+  case "$1" in
+    amd) echo "AMD_with_cuda" ;;
+    arm) echo "ARM_with_cuda ARM_without_cuda SOPHON_bm1688" ;;
+    l4t) echo "l4t" ;;
+    thor|thor_spark) echo "thor_spark" ;;
+    amd_cu128) echo "AMD_with_cuda" ;;
+    arm_cu128) echo "ARM_with_cuda ARM_without_cuda SOPHON_bm1688" ;;
+    *) echo "" ;;
+  esac
+}
 
-declare -A TARGET_TO_TAG_PREFIX=(
-  ["amd"]="amd"
-  ["arm"]="arm"
-  ["l4t"]="l4t"
-  ["thor"]="thor"
-  ["amd_cu128"]="amd_cu128"
-  ["arm_cu128"]="arm_cu128"
-)
+target_tag_prefix() {
+  case "$1" in
+    amd) echo "amd" ;;
+    arm) echo "arm" ;;
+    l4t) echo "l4t" ;;
+    thor|thor_spark) echo "thor" ;;
+    amd_cu128) echo "amd_cu128" ;;
+    arm_cu128) echo "arm_cu128" ;;
+    *) echo "" ;;
+  esac
+}
 
 echo "Ollama server will be included in the build."
 echo "Detected:"
@@ -68,7 +76,7 @@ Options:
   --profile FILE         Dockerfile under docker/ used to build (default: Dockerfile)
   --target TARGET        Publish target: amd, arm, l4t, thor, amd_cu128, arm_cu128
   --component-name NAME  Feishu column and Huawei SWR repository (default: ollama_server)
-  --sheet-title TITLE    Override the target's Feishu sheet
+  --sheet-title TITLE    Override the target's Feishu sheet; repeat or comma-separate for multiple sheets
   --tag-prefix PREFIX    Override the target's image tag prefix
   --source-image IMAGE   Push an existing local image instead of rebuilding
   --skip-build           Push ollama_server:<OLLAMA_TAG> instead of rebuilding
@@ -248,6 +256,73 @@ raise SystemExit(f"component column not found in row1: {target}")
 PY
 }
 
+find_or_create_component_column_letter() {
+  local token="$1"
+  local spreadsheet_token="$2"
+  local sheet_id="$3"
+  local component_name="$4"
+  local image_repo="$5"
+  local resp
+
+  resp=$(get_range_values "$token" "$spreadsheet_token" "${sheet_id}!A1:ZZ2") || {
+    err "find_or_create_component_column_letter: read range failed"
+    return 1
+  }
+
+  local resolved
+  resolved="$(python3 - "$component_name" "$resp" <<'PY'
+import sys, json
+
+target = sys.argv[1]
+resp = sys.argv[2]
+
+def letters(n):
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(ord("A") + r) + s
+    return s
+
+if not resp:
+    raise SystemExit("find_or_create_component_column_letter: empty response")
+try:
+    data = json.loads(resp)
+except Exception as e:
+    raise SystemExit(f"find_or_create_component_column_letter invalid json: {resp[:500]!r}, error={e}")
+if data.get("code") != 0:
+    raise SystemExit(f"read header failed: {data}")
+
+def cell_text(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+values = data.get("data", {}).get("valueRange", {}).get("values", [])
+header = values[0] if values else []
+last_used = 1
+for i, value in enumerate(header, start=1):
+    text = cell_text(value)
+    if text:
+        last_used = i
+    if text == target:
+        print(f"exists {letters(i)}")
+        raise SystemExit(0)
+
+print(f"create {letters(last_used + 1)}")
+PY
+)"
+
+  local action col
+  action="${resolved%% *}"
+  col="${resolved#* }"
+  if [[ "$action" == "create" ]]; then
+    log "Component column ${component_name} not found; creating ${col}" >&2
+    write_cell "$token" "$spreadsheet_token" "$sheet_id" "${col}1" "$component_name" >/dev/null
+    write_cell "$token" "$spreadsheet_token" "$sheet_id" "${col}2" "$image_repo" >/dev/null
+  fi
+  echo "$col"
+}
+
 find_date_row() {
   local token="$1"
   local spreadsheet_token="$2"
@@ -357,6 +432,7 @@ SOURCE_IMAGE=""
 BUILDER="auto"
 PUBLISH_TARGET=""
 TARGET_SHEET_TITLE=""
+TARGET_SHEET_TITLES=()
 COMPONENT_NAME="$DEFAULT_COMPONENT_NAME"
 TAG_PREFIX=""
 
@@ -399,7 +475,10 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --sheet-title)
-      TARGET_SHEET_TITLE="$2"
+      IFS=',' read -ra _SHEETS <<< "$2"
+      for _sheet in "${_SHEETS[@]}"; do
+        [[ -n "$_sheet" ]] && TARGET_SHEET_TITLES+=("$_sheet")
+      done
       shift 2
       ;;
     --component-name)
@@ -493,10 +572,15 @@ case "$PROFILE" in
 esac
 
 PUBLISH_TARGET="${PUBLISH_TARGET:-$DEFAULT_TARGET}"
-TARGET_SHEET_TITLE="${TARGET_SHEET_TITLE:-${TARGET_TO_SHEET_TITLE[$PUBLISH_TARGET]:-}}"
-TAG_PREFIX="${TAG_PREFIX:-${TARGET_TO_TAG_PREFIX[$PUBLISH_TARGET]:-}}"
+if [[ ${#TARGET_SHEET_TITLES[@]} -eq 0 ]]; then
+  TARGET_SHEET_TITLE="$(target_sheet_titles "$PUBLISH_TARGET")"
+  read -ra TARGET_SHEET_TITLES <<< "$TARGET_SHEET_TITLE"
+else
+  TARGET_SHEET_TITLE="${TARGET_SHEET_TITLES[*]}"
+fi
+TAG_PREFIX="${TAG_PREFIX:-$(target_tag_prefix "$PUBLISH_TARGET")}"
 
-if [[ -z "$TARGET_SHEET_TITLE" ]]; then
+if [[ ${#TARGET_SHEET_TITLES[@]} -eq 0 ]]; then
   err "No sheet configured for target '${PUBLISH_TARGET}'; use --sheet-title"
   exit 1
 fi
@@ -520,18 +604,137 @@ DATE=$(date +%Y%m%d)
 
 require_cmd curl
 require_cmd python3
-require_cmd docker
 
 detect_latest_ollama_tag() {
-  local url
-  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-    https://github.com/ollama/ollama/releases/latest 2>/dev/null || true)"
-  if [[ ! "$url" =~ /v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-    url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-      https://ghfast.top/https://github.com/ollama/ollama/releases/latest 2>/dev/null || true)"
+  local url api_tag
+  url="$(curl --connect-timeout 5 --max-time 20 -fsSLI -o /dev/null -w '%{url_effective}' \
+    https://ghfast.top/https://github.com/ollama/ollama/releases/latest 2>/dev/null || true)"
+  if [[ "$url" =~ /v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
   fi
-  [[ "$url" =~ /v([0-9]+\.[0-9]+\.[0-9]+) ]] || return 1
-  echo "${BASH_REMATCH[1]}"
+
+  url="$(curl --connect-timeout 5 --max-time 15 -fsSLI -o /dev/null -w '%{url_effective}' \
+    https://github.com/ollama/ollama/releases/latest 2>/dev/null || true)"
+  if [[ "$url" =~ /v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  api_tag="$(curl --connect-timeout 5 --max-time 15 -fsSL \
+    https://api.github.com/repos/ollama/ollama/releases/latest 2>/dev/null \
+    | python3 -c 'import json,sys; print((json.load(sys.stdin).get("tag_name") or "").lstrip("v"))' 2>/dev/null || true)"
+  if [[ "$api_tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$api_tag"
+    return 0
+  fi
+
+  return 1
+}
+
+fetch_latest_ollama_release_json() {
+  local url mirror
+  for mirror in $GITHUB_MIRRORS ""; do
+    if [[ -n "$mirror" ]]; then
+      url="${mirror}/https://api.github.com/repos/ollama/ollama/releases/latest"
+    else
+      url="https://api.github.com/repos/ollama/ollama/releases/latest"
+    fi
+    curl --connect-timeout 5 --max-time 20 -fsSL "$url" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+select_ollama_asset_url() {
+  local release_json="$1"
+  local asset_kind="$2"
+  python3 - "$release_json" "$asset_kind" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+asset_kind = sys.argv[2]
+assets = data.get("assets") or []
+
+def tokens(name):
+    return name.lower().replace("_", "-").split("-")
+
+def is_archive(name):
+    lowered = name.lower()
+    return lowered.endswith(".tar.zst") and "linux" in lowered
+
+def has_any(name, values):
+    lowered = name.lower()
+    return any(value in lowered for value in values)
+
+def score(asset, required, rejected=()):
+    name = asset.get("name") or ""
+    lowered = name.lower()
+    if not is_archive(name):
+        return -1
+    if any(word in lowered for word in rejected):
+        return -1
+    if not all(has_any(name, group) for group in required):
+        return -1
+    result = 0
+    if lowered.startswith("ollama-linux-"):
+        result += 10
+    if lowered.endswith(".tar.zst"):
+        result += 3
+    result -= len(name) / 1000
+    return result
+
+rules = {
+    "linux-amd64": {
+        "required": [["amd64", "x86-64", "x86_64"]],
+        "rejected": ["rocm", "jetpack", "cuda", "windows", "darwin"],
+    },
+    "linux-arm64": {
+        "required": [["arm64", "aarch64"]],
+        "rejected": ["jetpack", "windows", "darwin"],
+    },
+    "linux-arm64-jetpack5": {
+        "required": [["arm64", "aarch64"], ["jetpack5", "jetpack-5", "jp5"]],
+        "rejected": ["windows", "darwin"],
+    },
+    "linux-arm64-jetpack6": {
+        "required": [["arm64", "aarch64"], ["jetpack6", "jetpack-6", "jp6"]],
+        "rejected": ["windows", "darwin"],
+    },
+}
+
+rule = rules.get(asset_kind)
+if not rule:
+    raise SystemExit(1)
+
+matches = []
+for asset in assets:
+    value = score(asset, rule["required"], rule["rejected"])
+    if value >= 0:
+        matches.append((value, asset))
+
+matches.sort(key=lambda item: item[0], reverse=True)
+if matches:
+    print(matches[0][1].get("browser_download_url") or "")
+    raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+mirror_github_url() {
+  local url="$1"
+  local mirrored=()
+  local mirror
+  if [[ "$url" == https://github.com/* ]]; then
+    for mirror in $GITHUB_MIRRORS; do
+      mirrored+=("${mirror}/${url}")
+    done
+    mirrored+=("$url")
+    (IFS=' '; echo "${mirrored[*]}")
+  else
+    echo "$url"
+  fi
 }
 
 if [[ -z "${OLLAMA_TAG:-}" || "${OLLAMA_TAG}" == "latest" ]]; then
@@ -542,9 +745,18 @@ if [[ -z "${OLLAMA_TAG:-}" || "${OLLAMA_TAG}" == "latest" ]]; then
   log "Detected latest OLLAMA_TAG=${OLLAMA_TAG}"
 fi
 
+OLLAMA_RELEASE_JSON=""
+if [[ "$PROFILE" != "Dockerfile" ]]; then
+  OLLAMA_RELEASE_JSON="$(fetch_latest_ollama_release_json)" || {
+    err "failed to fetch latest Ollama release asset list"
+    exit 1
+  }
+fi
+
 OLLAMA_VERSION="${OLLAMA_TAG#v}"
 TAG=${TAG_PREFIX}_${OLLAMA_VERSION}
 IMAGE_URI="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${COMPONENT_NAME}:${TAG}"
+IMAGE_REPO="swr.cn-southwest-2.myhuaweicloud.com/ictrek/${COMPONENT_NAME}"
 
 # -------------------------
 # build args
@@ -567,6 +779,43 @@ fi
 echo "Using OLLAMA_TAG=${OLLAMA_TAG}"
 BUILD_ARGS+=(--build-arg "OLLAMA_TAG=${OLLAMA_TAG}")
 
+if [[ -n "$OLLAMA_RELEASE_JSON" ]]; then
+  ASSET_KIND=""
+  OVERLAY_ASSET_KIND=""
+  case "$PUBLISH_TARGET" in
+    l4t)
+      ASSET_KIND="linux-arm64"
+      OVERLAY_ASSET_KIND="linux-arm64-jetpack6"
+      ;;
+    thor|thor_spark|arm_cu128)
+      ASSET_KIND="linux-arm64"
+      ;;
+    amd_cu128)
+      ASSET_KIND="linux-amd64"
+      ;;
+  esac
+
+  if [[ -n "$ASSET_KIND" ]]; then
+    OLLAMA_ARCHIVE_URL="$(select_ollama_asset_url "$OLLAMA_RELEASE_JSON" "$ASSET_KIND")" || {
+      err "failed to find Ollama release asset for ${ASSET_KIND}"
+      exit 1
+    }
+    OLLAMA_ARCHIVE_URLS="$(mirror_github_url "$OLLAMA_ARCHIVE_URL")"
+    echo "Using OLLAMA_ARCHIVE_URL=$(echo "$OLLAMA_ARCHIVE_URL" | sed 's/[?].*$//')"
+    BUILD_ARGS+=(--build-arg "OLLAMA_ARCHIVE_URLS=${OLLAMA_ARCHIVE_URLS}")
+  fi
+
+  if [[ -n "$OVERLAY_ASSET_KIND" ]]; then
+    OLLAMA_JETPACK_ARCHIVE_URL="$(select_ollama_asset_url "$OLLAMA_RELEASE_JSON" "$OVERLAY_ASSET_KIND")" || {
+      err "failed to find Ollama release asset for ${OVERLAY_ASSET_KIND}"
+      exit 1
+    }
+    OLLAMA_JETPACK_ARCHIVE_URLS="$(mirror_github_url "$OLLAMA_JETPACK_ARCHIVE_URL")"
+    echo "Using OLLAMA_JETPACK_ARCHIVE_URL=$(echo "$OLLAMA_JETPACK_ARCHIVE_URL" | sed 's/[?].*$//')"
+    BUILD_ARGS+=(--build-arg "OLLAMA_JETPACK_ARCHIVE_URLS=${OLLAMA_JETPACK_ARCHIVE_URLS}")
+  fi
+fi
+
 if [[ -n "${USE_OLD_TRANSFORMERS:-}" ]]; then
   echo "Using USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}"
   BUILD_ARGS+=(--build-arg "USE_OLD_TRANSFORMERS=${USE_OLD_TRANSFORMERS}")
@@ -579,7 +828,7 @@ fi
 
 log "PROFILE=${PROFILE}"
 log "PUBLISH_TARGET=${PUBLISH_TARGET}"
-log "TARGET_SHEET_TITLE=${TARGET_SHEET_TITLE}"
+log "TARGET_SHEET_TITLES=${TARGET_SHEET_TITLES[*]}"
 log "COMPONENT_NAME=${COMPONENT_NAME}"
 log "TAG_PREFIX=${TAG_PREFIX}"
 log "TAG=${TAG}"
@@ -591,6 +840,8 @@ if [[ "$DRY_RUN" == "true" ]]; then
   log "Dry run complete; no image was built or pushed and Feishu was not updated."
   exit 0
 fi
+
+require_cmd docker
 
 if [[ ! -f "$FEISHU_CONFIG_FILE" ]]; then
   err "Feishu config not found: $FEISHU_CONFIG_FILE"
@@ -621,8 +872,7 @@ else
       -t "${IMAGE_URI}" \
       -f "$PROFILE_PATH" "$REPO_ROOT"
   else
-    docker build \
-      "${PLATFORM_ARGS[@]}" \
+    DOCKER_BUILDKIT=0 docker build \
       "${BUILD_ARGS[@]}" \
       -t "${IMAGE_URI}" \
       -f "$PROFILE_PATH" "$REPO_ROOT"
@@ -637,27 +887,29 @@ log "Docker push succeeded: ${IMAGE_URI}"
 # push 成功后写飞书
 # -------------------------
 
-FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
-SHEET_ID="$(get_sheet_id_by_title "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$TARGET_SHEET_TITLE")"
-log "Resolved sheet: ${TARGET_SHEET_TITLE} -> ${SHEET_ID}"
-
-FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
-COMPONENT_COL="$(find_component_column_letter "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$COMPONENT_NAME")"
-log "Resolved component column: ${COMPONENT_NAME} -> ${COMPONENT_COL}"
-
-FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
-DATE_ROW="$(find_date_row "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$DATE")"
-
-if [[ -z "$DATE_ROW" ]]; then
-  log "Date ${DATE} not found, creating a new row at top of data area"
+for SHEET_TITLE in "${TARGET_SHEET_TITLES[@]}"; do
   FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
-  prepend_date_row "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$DATE" >/dev/null
-  DATE_ROW=4
-else
-  log "Date ${DATE} already exists at row ${DATE_ROW}"
-fi
+  SHEET_ID="$(get_sheet_id_by_title "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_TITLE")"
+  log "Resolved sheet: ${SHEET_TITLE} -> ${SHEET_ID}"
 
-FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
-write_cell "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "${COMPONENT_COL}${DATE_ROW}" "$TAG" >/dev/null
+  FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
+  COMPONENT_COL="$(find_or_create_component_column_letter "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$COMPONENT_NAME" "$IMAGE_REPO")"
+  log "Resolved component column: ${COMPONENT_NAME} -> ${COMPONENT_COL}"
 
-log "Feishu updated: ${TARGET_SHEET_TITLE}!${COMPONENT_COL}${DATE_ROW} = ${TAG}"
+  FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
+  DATE_ROW="$(find_date_row "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$DATE")"
+
+  if [[ -z "$DATE_ROW" ]]; then
+    log "Date ${DATE} not found in ${SHEET_TITLE}, creating a new row at top of data area"
+    FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
+    prepend_date_row "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "$DATE" >/dev/null
+    DATE_ROW=4
+  else
+    log "Date ${DATE} already exists in ${SHEET_TITLE} at row ${DATE_ROW}"
+  fi
+
+  FEISHU_TOKEN="$(get_feishu_token "$FEISHU_APP_ID" "$FEISHU_APP_SECRET")"
+  write_cell "$FEISHU_TOKEN" "$FEISHU_SPREADSHEET_TOKEN" "$SHEET_ID" "${COMPONENT_COL}${DATE_ROW}" "$TAG" >/dev/null
+
+  log "Feishu updated: ${SHEET_TITLE}!${COMPONENT_COL}${DATE_ROW} = ${TAG}"
+done

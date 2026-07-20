@@ -5,6 +5,7 @@ ARG JETPACK=false
 ARG JETPACK_MAJOR=unknown
 ARG PROXY
 ARG OLLAMA_TAG=latest
+ARG OLLAMA_ARCHIVE_URLS
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV OLLAMA_LLM_LIBRARY=cuda_v13
@@ -35,18 +36,12 @@ RUN set -eux; \
           break; \
         fi; \
       else \
-        if wget -O /tmp/ollama.tar.zst --timeout=30 --tries=3 \
-          --retry-on-http-error=429,500,502,503,504 --no-cache --no-cookies --server-response "$URL"; then \
-          break; \
-        fi; \
-      fi; \
-      REAL_URL=$(wget --spider --server-response "$URL" 2>&1 \
-        | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
-      if echo "$URL $REAL_URL" | grep -q 'github\.com'; then \
-        MIRROR_URL="${GH_MIRROR}/${REAL_URL:-$URL}"; \
-        echo "using github mirror: ${MIRROR_URL}"; \
-        wget -O /tmp/ollama.tar.zst --timeout=30 --tries=3 \
-          --retry-on-http-error=429,500,502,503,504 --no-cache --no-cookies --server-response "$MIRROR_URL" && break; \
+        for DL_URL in ${OLLAMA_ARCHIVE_URLS:-$URL}; do \
+          echo "trying ${DL_URL}"; \
+          wget -O /tmp/ollama.tar.zst --timeout=30 --tries=3 \
+            --retry-on-http-error=429,500,502,503,504 --no-cache --no-cookies --server-response "$DL_URL" && break; \
+        done; \
+        test -s /tmp/ollama.tar.zst && break; \
       fi; \
       echo "retry $i ..."; sleep 2; \
       rm -f /tmp/ollama.tar.zst; \
@@ -76,8 +71,9 @@ COPY requirements.txt /app/requirements.txt
 RUN pip3 install --break-system-packages --no-cache-dir -i https://mirrors.ustc.edu.cn/pypi/simple -r /app/requirements.txt
 
 COPY ollama_gateway /app/ollama_gateway
-COPY scripts/start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+COPY scripts /app/scripts
+RUN chmod +x /app/scripts/start.sh /app/scripts/register_model_hub.py \
+  && ln -sf /app/scripts/start.sh /app/start.sh
 
 # 暴露端口：对外只需要 Gateway 端口
 EXPOSE 11535

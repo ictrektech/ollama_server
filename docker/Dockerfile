@@ -30,9 +30,10 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN uv pip install --no-cache --python /opt/venv/bin/python -r /app/requirements.txt
 
-COPY scripts/start.sh /app/
+COPY scripts /app/scripts
 COPY ollama_gateway /app/ollama_gateway
-RUN chmod +x /app/start.sh
+RUN chmod +x /app/scripts/start.sh /app/scripts/register_model_hub.py \
+  && ln -sf /app/scripts/start.sh /app/start.sh
 
 EXPOSE 11535
 EXPOSE 11434

@@ -11,6 +11,7 @@
 - 根据上游响应自动区分普通 JSON 和 SSE 流式响应
 - Ollama 和 Gateway 在同一个镜像/容器中运行，外部只访问 Gateway 端口 `11535`
 - 增加 gateway 客户端手动中断检测，及时中断 Ollama 上游推理请求，节约算力
+- 可选向 Model Hub 注册自身管理接口，便于 Model Hub 查询版本、模型列表、运行状态并启动/停止模型
 
 ## 架构
 
@@ -112,6 +113,44 @@ curl http://localhost:11535/v1/completions \
 | `UPSTREAM_BASE` | `http://127.0.0.1:11434` | Ollama 上游地址 |
 | `UPSTREAM_STARTUP_TIMEOUT_SEC` | `30` | Gateway 等待 Ollama 就绪的秒数 |
 | `DISCONNECT_POLL_SEC` | `0.1` | 检查客户端是否断开的间隔秒数 |
+| `MODEL_HUB_REGISTER_URL` | 空 | Model Hub 后端地址；为空时不注册，例如 `http://model-hub-backend:5005` |
+| `MODEL_HUB_SERVICE_ID` | 容器 hostname | 注册到 Model Hub 的稳定服务 ID |
+| `MODEL_HUB_SERVICE_NAME` | `MODEL_HUB_SERVICE_ID` | Model Hub 中展示的服务名称 |
+| `MODEL_HUB_SERVICE_BASE_URL` | `http://<service_id>:11434` | Model Hub 访问 Ollama 原生 API 的 vos_default 地址 |
+| `MODEL_HUB_SERVICE_GATEWAY_URL` | `http://<service_id>:11535` | Model Hub 访问 OpenAI Gateway 的 vos_default 地址 |
+| `MODEL_HUB_SERVICE_ROLE` | `generate` | 服务用途，可填 `generate` 或 `embedding` |
+
+### 注册到 Model Hub
+
+在 VOS 部署中，`ollama_server` 应加入 `vos_default` 网络，并配置稳定 alias。启动脚本会在后台向 Model Hub 注册，不影响 Gateway 正常启动：
+
+```yaml
+services:
+  ollama-server:
+    image: swr.cn-southwest-2.myhuaweicloud.com/ictrek/ollama_server:<tag>
+    networks:
+      vos_default:
+        aliases:
+          - my-ollama-server
+    environment:
+      MODEL_HUB_REGISTER_URL: http://model-hub-backend:5005
+      MODEL_HUB_SERVICE_ID: my-ollama-server
+      MODEL_HUB_SERVICE_NAME: My Ollama Server
+      MODEL_HUB_SERVICE_BASE_URL: http://my-ollama-server:11434
+      MODEL_HUB_SERVICE_GATEWAY_URL: http://my-ollama-server:11535
+      MODEL_HUB_SERVICE_ROLE: generate
+```
+
+Model Hub 对 `kind=ollama` 使用原生接口管理：
+
+| 能力 | Ollama 接口 |
+| --- | --- |
+| 健康/版本 | `GET /api/version` |
+| 已下载模型 | `GET /api/tags` |
+| 已启动模型、显存/上下文 | `GET /api/ps` |
+| 启动 generate 模型 | `POST /api/generate` + `keep_alive` |
+| 启动 embedding 模型 | `POST /api/embed` + `keep_alive` |
+| 停止模型 | 同接口传 `keep_alive: 0` |
 
 ## 常用命令
 
@@ -166,11 +205,11 @@ Dockerfile profile 只决定如何构建镜像，发布目标通过 `--target` �
 | Target | Feishu Sheet | Image Tag Prefix |
 |--------|---------------|------------------|
 | `amd` | `AMD_with_cuda` | `amd` |
-| `arm` | `ARM_with_cuda` | `arm` |
+| `arm` | `ARM_with_cuda`、`ARM_without_cuda`、`SOPHON_bm1688` | `arm` |
 | `l4t` | `l4t` | `l4t` |
 | `thor` | `thor_spark` | `thor` |
 | `amd_cu128` | `AMD_with_cuda` | `amd_cu128` |
-| `arm_cu128` | `ARM_with_cuda` | `arm_cu128` |
+| `arm_cu128` | `ARM_with_cuda`、`ARM_without_cuda`、`SOPHON_bm1688` | `arm_cu128` |
 
 飞书列名同时作为华为云 SWR 仓库名，飞书写入值与镜像 tag 保持一致。未设置
 `OLLAMA_TAG` 或设置为 `latest` 时，构建脚本会自动检测 Ollama 最新 release；GitHub

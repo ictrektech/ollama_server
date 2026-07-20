@@ -5,6 +5,8 @@ ARG JETPACK=false
 ARG JETPACK_MAJOR=6
 ARG OLLAMA_TAG=latest
 ARG PROXY
+ARG OLLAMA_ARCHIVE_URLS
+ARG OLLAMA_JETPACK_ARCHIVE_URLS
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -36,22 +38,15 @@ RUN set -eux; \
         --no-cache --no-cookies --server-response \
         "$URL" && break; \
       else \
-        wget -O /tmp/ollama.tar.zst \
-        --timeout=30 --tries=3 \
-        --retry-on-http-error=429,500,502,503,504 \
-        --no-cache --no-cookies --server-response \
-        "$URL" && break; \
-        REAL_URL=$(wget --spider --server-response "$URL" 2>&1 \
-          | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
-        if echo "$URL $REAL_URL" | grep -q 'github\.com'; then \
-          DL_URL="${GH_MIRROR}/${REAL_URL:-$URL}"; \
-          echo "using github mirror: ${DL_URL}"; \
+        for DL_URL in ${OLLAMA_ARCHIVE_URLS:-$URL}; do \
+          echo "trying ${DL_URL}"; \
           wget -O /tmp/ollama.tar.zst \
           --timeout=30 --tries=3 \
           --retry-on-http-error=429,500,502,503,504 \
           --no-cache --no-cookies --server-response \
           "$DL_URL" && break; \
-        fi; \
+        done; \
+        test -s /tmp/ollama.tar.zst && break; \
       fi; \
       echo "retry $i ..."; sleep 2; \
       rm -f /tmp/ollama.tar.zst; \
@@ -66,8 +61,18 @@ RUN set -eux; \
 RUN set -eux; \
   JURL=""; \
   case "${JETPACK_MAJOR}" in \
-    6) JURL="https://ollama.com/download/ollama-linux-arm64-jetpack6.tar.zst" ;; \
-    5) JURL="https://ollama.com/download/ollama-linux-arm64-jetpack5.tar.zst" ;; \
+    6) \
+      if [ "${OLLAMA_TAG}" = "latest" ]; then \
+        JURL="https://ollama.com/download/ollama-linux-arm64-jetpack6.tar.zst"; \
+      else \
+        JURL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_TAG#v}/ollama-linux-arm64-jetpack6.tar.zst"; \
+      fi ;; \
+    5) \
+      if [ "${OLLAMA_TAG}" = "latest" ]; then \
+        JURL="https://ollama.com/download/ollama-linux-arm64-jetpack5.tar.zst"; \
+      else \
+        JURL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_TAG#v}/ollama-linux-arm64-jetpack5.tar.zst"; \
+      fi ;; \
     *) JURL="" ;; \
   esac; \
   if [ -n "${JURL}" ]; then \
@@ -82,22 +87,15 @@ RUN set -eux; \
         --no-cache --no-cookies --server-response \
         "${JURL}" && break; \
       else \
-        wget -O /tmp/ollamaj.tar.zst \
-        --timeout=30 --tries=3 \
-        --retry-on-http-error=429,500,502,503,504 \
-        --no-cache --no-cookies --server-response \
-        "${JURL}" && break; \
-        JREAL_URL=$(wget --spider --server-response "${JURL}" 2>&1 \
-          | grep -i 'Location:' | tail -1 | awk '{print $2}' | tr -d '\r'); \
-        if echo "${JURL} ${JREAL_URL}" | grep -q 'github\.com'; then \
-          JDL_URL="${GH_MIRROR}/${JREAL_URL:-$JURL}"; \
-          echo "using github mirror: ${JDL_URL}"; \
+        for JDL_URL in ${OLLAMA_JETPACK_ARCHIVE_URLS:-$JURL}; do \
+          echo "trying ${JDL_URL}"; \
           wget -O /tmp/ollamaj.tar.zst \
           --timeout=30 --tries=3 \
           --retry-on-http-error=429,500,502,503,504 \
           --no-cache --no-cookies --server-response \
           "${JDL_URL}" && break; \
-        fi; \
+        done; \
+        test -s /tmp/ollamaj.tar.zst && break; \
       fi; \
       echo "retry $i ..."; sleep 2; \
       rm -f /tmp/ollamaj.tar.zst; \
@@ -126,8 +124,9 @@ COPY requirements.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir -i https://mirrors.ustc.edu.cn/pypi/simple -r /app/requirements.txt
 
 COPY ollama_gateway /app/ollama_gateway
-COPY scripts/start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+COPY scripts /app/scripts
+RUN chmod +x /app/scripts/start.sh /app/scripts/register_model_hub.py \
+  && ln -sf /app/scripts/start.sh /app/start.sh
 
 # 暴露端口：对外只需要 Gateway 端口
 EXPOSE 11535
