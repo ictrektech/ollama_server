@@ -594,7 +594,12 @@ async def forward(req: Request, task_id: str) -> Response:
 
     try:
         raw_body = await req.body()
-        track_raw_generation = req.method == "POST" and req.url.path in {"/api/chat", "/api/generate"}
+        track_raw_generation = req.method == "POST" and req.url.path in {
+            "/api/chat",
+            "/api/generate",
+            "/api/embed",
+            "/api/embeddings",
+        }
         if track_raw_generation:
             try:
                 raw_payload = parse_json_object(raw_body)
@@ -684,7 +689,7 @@ async def forward_completions(req: Request, task_id: str) -> Response:
 
 
 # ---------------------------
-# Proxy routes: all OpenAI-compat endpoints live under /v1/*
+# Proxy routes: OpenAI-compatible /v1/* plus Ollama native /api/*.
 # ---------------------------
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def v1_proxy(path: str, req: Request):
@@ -693,6 +698,12 @@ async def v1_proxy(path: str, req: Request):
         return await forward_chat_completions(req, task_id)
     if req.method == "POST" and path == "completions":
         return await forward_completions(req, task_id)
+    return await forward(req, task_id)
+
+
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def ollama_api_proxy(path: str, req: Request):
+    task_id = get_task_id(req)
     return await forward(req, task_id)
 
 
