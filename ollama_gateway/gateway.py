@@ -43,6 +43,7 @@ UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "http://127.0.0.1:11434").rstrip("/")
 UPSTREAM_STARTUP_TIMEOUT_SEC = float(os.getenv("UPSTREAM_STARTUP_TIMEOUT_SEC", "30"))
 
 DISCONNECT_POLL_SEC = float(os.getenv("DISCONNECT_POLL_SEC", "0.1"))
+OLLAMA_NUM_PARALLEL = int(os.getenv("OLLAMA_NUM_PARALLEL", "1") or "1")
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -60,6 +61,44 @@ HOP_BY_HOP_HEADERS = {
 
 class ClientDisconnectError(Exception):
     pass
+
+
+class SlotTracker:
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._active_total = 0
+        self._active_by_model: Dict[str, int] = {}
+
+    async def begin(self, model: str) -> None:
+        key = model or "-"
+        async with self._lock:
+            self._active_total += 1
+            self._active_by_model[key] = self._active_by_model.get(key, 0) + 1
+
+    async def end(self, model: str) -> None:
+        key = model or "-"
+        async with self._lock:
+            self._active_total = max(0, self._active_total - 1)
+            current = max(0, self._active_by_model.get(key, 0) - 1)
+            if current:
+                self._active_by_model[key] = current
+            else:
+                self._active_by_model.pop(key, None)
+
+    async def snapshot(self) -> Dict[str, Any]:
+        async with self._lock:
+            by_model = dict(self._active_by_model)
+            active_total = self._active_total
+        return {
+            "active_slots": active_total,
+            "total_slots": OLLAMA_NUM_PARALLEL,
+            "available_slots": max(0, OLLAMA_NUM_PARALLEL - active_total),
+            "slot_usage": f"{active_total}/{OLLAMA_NUM_PARALLEL}",
+            "active_by_model": by_model,
+        }
+
+
+slot_tracker = SlotTracker()
 
 
 # ---------------------------
@@ -277,6 +316,7 @@ async def stream_openai_compatible_response(
     response_id: str,
     created: int,
     convert_chunk: Callable[[Dict[str, Any], str, int], Dict[str, Any]],
+    on_close: Callable[[], Any] | None = None,
 ) -> StreamingResponse:
     async def gen():
         try:
@@ -291,6 +331,10 @@ async def stream_openai_compatible_response(
             yield b"data: [DONE]\n\n"
         finally:
             await up.aclose()
+            if on_close:
+                result = on_close()
+                if asyncio.iscoroutine(result):
+                    await result
 
     return attach_task_id(StreamingResponse(
         gen(),
@@ -334,35 +378,51 @@ async def forward_openai_compatible(req: Request, task_id: str, route: OpenAICom
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+        model = str(ollama_payload.get("model") or openai_payload.get("model") or "-")
+        await slot_tracker.begin(model)
+        slot_done = False
+        async def end_slot_once() -> None:
+            nonlocal slot_done
+            if not slot_done:
+                slot_done = True
+                await slot_tracker.end(model)
+
         request = build_json_upstream_request(req, upstream_url, ollama_payload)
-        up = await send_upstream(req, request)
-        status_code = up.status_code
+        stream_response_returned = False
+        try:
+            up = await send_upstream(req, request)
+            status_code = up.status_code
 
-        if status_code < 200 or status_code >= 300:
-            return await relay_upstream_error_response(req, up, task_id, status_code)
+            if status_code < 200 or status_code >= 300:
+                return await relay_upstream_error_response(req, up, task_id, status_code)
 
-        response_id = f"{route.response_id_prefix}-{uuid.uuid4().hex}"
-        created = now_ts()
+            response_id = f"{route.response_id_prefix}-{uuid.uuid4().hex}"
+            created = now_ts()
 
-        if ollama_payload.get("stream") is True:
-            return await stream_openai_compatible_response(
+            if ollama_payload.get("stream") is True:
+                stream_response_returned = True
+                return await stream_openai_compatible_response(
+                    up,
+                    task_id,
+                    status_code,
+                    response_id,
+                    created,
+                    route.convert_stream_chunk,
+                    end_slot_once,
+                )
+
+            return await build_openai_response(
+                req,
                 up,
                 task_id,
                 status_code,
                 response_id,
                 created,
-                route.convert_stream_chunk,
+                route.convert_response,
             )
-
-        return await build_openai_response(
-            req,
-            up,
-            task_id,
-            status_code,
-            response_id,
-            created,
-            route.convert_response,
-        )
+        finally:
+            if not ollama_payload.get("stream") or not stream_response_returned:
+                await end_slot_once()
 
     except httpx.RequestError:
         raise HTTPException(status_code=502, detail="Bad gateway")
@@ -460,3 +520,8 @@ async def v1_proxy(path: str, req: Request):
     if req.method == "POST" and path == "completions":
         return await forward_completions(req, task_id)
     return await forward(req, task_id)
+
+
+@app.get("/metrics")
+async def metrics():
+    return await slot_tracker.snapshot()

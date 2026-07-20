@@ -49,6 +49,9 @@ def main() -> int:
         "base_url": base_url,
         "gateway_url": gateway_url,
         "role": role,
+        "api_contract": {
+            "metrics_path": "/metrics",
+        },
         "metadata": {
             "container_name": getenv("HOSTNAME", service_id),
             "models_base_dir": getenv("MODELS_BASE_DIR", ""),
