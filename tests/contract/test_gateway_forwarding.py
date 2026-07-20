@@ -391,6 +391,7 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["active_by_model"], {"qwen3:0.6b": 1})
         self.assertEqual(snapshot["phase"], "decode")
         self.assertEqual(snapshot["model_metrics"]["qwen3:0.6b"]["phase"], "decode")
+        self.assertGreater(snapshot["model_metrics"]["qwen3:0.6b"]["decode_tokens_per_second"], 0)
         task.cancel()
 
         with self.assertRaises(asyncio.CancelledError):

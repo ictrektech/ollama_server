@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 import asyncio
+import re
 from dataclasses import dataclass
 from contextlib import asynccontextmanager, suppress
 from typing import Dict, Any, Callable
@@ -221,8 +222,19 @@ class ActiveRequest:
     last_updated_at: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    estimated_completion_tokens: int = 0
     prefill_tps: float = 0.0
     decode_tps: float = 0.0
+
+
+def estimate_stream_tokens(text: str) -> int:
+    if not text:
+        return 0
+
+    cjk_chars = len(re.findall(r"[\u3400-\u9fff]", text))
+    non_cjk = re.sub(r"[\u3400-\u9fff]", " ", text)
+    words = len(re.findall(r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_]", non_cjk))
+    return max(1, cjk_chars + words)
 
 
 class SlotTracker:
@@ -277,6 +289,8 @@ class SlotTracker:
             if not active:
                 return
             active.last_updated_at = now
+            if content:
+                active.estimated_completion_tokens += estimate_stream_tokens(content)
             if prompt_tokens:
                 active.prompt_tokens = prompt_tokens
             if completion_tokens:
@@ -285,6 +299,9 @@ class SlotTracker:
                 active.prefill_tps = prompt_tokens / (prompt_duration_ns / 1_000_000_000)
             if completion_tokens and completion_duration_ns > 0:
                 active.decode_tps = completion_tokens / (completion_duration_ns / 1_000_000_000)
+            elif active.estimated_completion_tokens and active.phase == "decode":
+                elapsed = max(0.001, now - active.phase_started_at)
+                active.decode_tps = active.estimated_completion_tokens / elapsed
 
     async def end(self, request_id: str) -> None:
         async with self._lock:
@@ -327,7 +344,7 @@ class SlotTracker:
                 model_item["decode_tokens_per_second"] = round(item.decode_tps, 2)
                 model_item["tokens_per_second"] = round(item.decode_tps, 2)
             model_item["prompt_tokens"] += item.prompt_tokens
-            model_item["completion_tokens"] += item.completion_tokens
+            model_item["completion_tokens"] += item.completion_tokens or item.estimated_completion_tokens
             requests.append({
                 "id": item.id,
                 "model": item.model,
@@ -337,7 +354,7 @@ class SlotTracker:
                 "decode_tokens_per_second": round(item.decode_tps, 2) if item.decode_tps else 0,
                 "tokens_per_second": round(item.decode_tps, 2) if item.decode_tps else 0,
                 "prompt_tokens": item.prompt_tokens,
-                "completion_tokens": item.completion_tokens,
+                "completion_tokens": item.completion_tokens or item.estimated_completion_tokens,
             })
 
         return {

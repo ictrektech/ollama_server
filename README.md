@@ -93,7 +93,7 @@ curl http://localhost:11535/v1/chat/completions \
 
 `/v1/chat/completions` 会在 Gateway 内部转发到 Ollama `/api/chat`。OpenAI 常用参数会映射到 Ollama `options`，例如 `max_tokens` / `max_completion_tokens` -> `num_predict`；显式传入的 `options` 优先级更高。
 
-运行状态统计以 Gateway 为入口。通过 `http://<host>:11535/v1/chat/completions`、`/v1/completions`、`/api/chat` 或 `/api/generate` 发起的请求会计入 `/metrics` 的槽位；直接执行 `ollama run` 或直连 `11434` 会绕过 Gateway，无法被 `/metrics` 统计。
+运行状态统计以 Gateway 为入口。通过 `http://<host>:11535/v1/chat/completions`、`/v1/completions`、`/api/chat` 或 `/api/generate` 发起的请求会计入 `/metrics` 的槽位；直接执行 `ollama run` 或直连 `11434` 会绕过 Gateway，无法被 `/metrics` 统计。流式请求运行中会按已收到的 chunk 估算 decode token/s，请求结束时如果 Ollama 返回官方 `eval_count` / `eval_duration`，则以官方统计覆盖。
 
 文本补全同样支持请求级 `options`：
 
