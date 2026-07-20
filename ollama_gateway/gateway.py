@@ -63,44 +63,6 @@ class ClientDisconnectError(Exception):
     pass
 
 
-class SlotTracker:
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._active_total = 0
-        self._active_by_model: Dict[str, int] = {}
-
-    async def begin(self, model: str) -> None:
-        key = model or "-"
-        async with self._lock:
-            self._active_total += 1
-            self._active_by_model[key] = self._active_by_model.get(key, 0) + 1
-
-    async def end(self, model: str) -> None:
-        key = model or "-"
-        async with self._lock:
-            self._active_total = max(0, self._active_total - 1)
-            current = max(0, self._active_by_model.get(key, 0) - 1)
-            if current:
-                self._active_by_model[key] = current
-            else:
-                self._active_by_model.pop(key, None)
-
-    async def snapshot(self) -> Dict[str, Any]:
-        async with self._lock:
-            by_model = dict(self._active_by_model)
-            active_total = self._active_total
-        return {
-            "active_slots": active_total,
-            "total_slots": OLLAMA_NUM_PARALLEL,
-            "available_slots": max(0, OLLAMA_NUM_PARALLEL - active_total),
-            "slot_usage": f"{active_total}/{OLLAMA_NUM_PARALLEL}",
-            "active_by_model": by_model,
-        }
-
-
-slot_tracker = SlotTracker()
-
-
 # ---------------------------
 # Lifespan
 # ---------------------------
@@ -249,6 +211,151 @@ class OpenAICompatRoute:
     convert_stream_chunk: Callable[[Dict[str, Any], str, int], Dict[str, Any]]
 
 
+@dataclass
+class ActiveRequest:
+    id: str
+    model: str
+    started_at: float
+    phase: str = "prefill"
+    phase_started_at: float = 0.0
+    last_updated_at: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    prefill_tps: float = 0.0
+    decode_tps: float = 0.0
+
+
+class SlotTracker:
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._active: Dict[str, ActiveRequest] = {}
+
+    async def begin(self, model: str) -> str:
+        request_id = uuid.uuid4().hex
+        key = model or "-"
+        now = time.monotonic()
+        async with self._lock:
+            self._active[request_id] = ActiveRequest(
+                id=request_id,
+                model=key,
+                started_at=now,
+                phase_started_at=now,
+                last_updated_at=now,
+            )
+        return request_id
+
+    async def mark_decode(self, request_id: str) -> None:
+        now = time.monotonic()
+        async with self._lock:
+            active = self._active.get(request_id)
+            if active and active.phase == "prefill":
+                active.phase = "decode"
+                active.phase_started_at = now
+                active.last_updated_at = now
+
+    async def update_from_ollama_chunk(self, request_id: str, data: Dict[str, Any]) -> None:
+        content = ""
+        message = data.get("message")
+        if isinstance(message, dict):
+            content = str(message.get("content") or message.get("thinking") or message.get("reasoning_content") or "")
+        elif data.get("response") is not None:
+            content = str(data.get("response") or "")
+        elif data.get("thinking") is not None or data.get("reasoning_content") is not None:
+            content = str(data.get("thinking") or data.get("reasoning_content") or "")
+
+        if content:
+            await self.mark_decode(request_id)
+
+        prompt_tokens = int(data.get("prompt_eval_count") or 0)
+        completion_tokens = int(data.get("eval_count") or 0)
+        prompt_duration_ns = int(data.get("prompt_eval_duration") or 0)
+        completion_duration_ns = int(data.get("eval_duration") or 0)
+
+        now = time.monotonic()
+        async with self._lock:
+            active = self._active.get(request_id)
+            if not active:
+                return
+            active.last_updated_at = now
+            if prompt_tokens:
+                active.prompt_tokens = prompt_tokens
+            if completion_tokens:
+                active.completion_tokens = completion_tokens
+            if prompt_tokens and prompt_duration_ns > 0:
+                active.prefill_tps = prompt_tokens / (prompt_duration_ns / 1_000_000_000)
+            if completion_tokens and completion_duration_ns > 0:
+                active.decode_tps = completion_tokens / (completion_duration_ns / 1_000_000_000)
+
+    async def end(self, request_id: str) -> None:
+        async with self._lock:
+            self._active.pop(request_id, None)
+
+    async def snapshot(self) -> Dict[str, Any]:
+        async with self._lock:
+            active = list(self._active.values())
+
+        active_total = len(active)
+        by_model: Dict[str, int] = {}
+        phase_by_model: Dict[str, Dict[str, int]] = {}
+        model_metrics: Dict[str, Dict[str, Any]] = {}
+        requests = []
+
+        for item in active:
+            by_model[item.model] = by_model.get(item.model, 0) + 1
+            phase_counts = phase_by_model.setdefault(item.model, {})
+            phase_counts[item.phase] = phase_counts.get(item.phase, 0) + 1
+            model_item = model_metrics.setdefault(item.model, {
+                "active_slots": 0,
+                "total_slots": OLLAMA_NUM_PARALLEL,
+                "slot_usage": f"0/{OLLAMA_NUM_PARALLEL}",
+                "phase": item.phase,
+                "phase_counts": {},
+                "prefill_tokens_per_second": 0.0,
+                "decode_tokens_per_second": 0.0,
+                "tokens_per_second": 0.0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+            })
+            model_item["active_slots"] += 1
+            model_item["slot_usage"] = f"{model_item['active_slots']}/{OLLAMA_NUM_PARALLEL}"
+            model_item["phase_counts"] = phase_counts
+            if item.phase == "decode":
+                model_item["phase"] = "decode"
+            if item.prefill_tps:
+                model_item["prefill_tokens_per_second"] = round(item.prefill_tps, 2)
+            if item.decode_tps:
+                model_item["decode_tokens_per_second"] = round(item.decode_tps, 2)
+                model_item["tokens_per_second"] = round(item.decode_tps, 2)
+            model_item["prompt_tokens"] += item.prompt_tokens
+            model_item["completion_tokens"] += item.completion_tokens
+            requests.append({
+                "id": item.id,
+                "model": item.model,
+                "phase": item.phase,
+                "elapsed_seconds": round(max(0.0, time.monotonic() - item.started_at), 3),
+                "prefill_tokens_per_second": round(item.prefill_tps, 2) if item.prefill_tps else 0,
+                "decode_tokens_per_second": round(item.decode_tps, 2) if item.decode_tps else 0,
+                "tokens_per_second": round(item.decode_tps, 2) if item.decode_tps else 0,
+                "prompt_tokens": item.prompt_tokens,
+                "completion_tokens": item.completion_tokens,
+            })
+
+        return {
+            "active_slots": active_total,
+            "total_slots": OLLAMA_NUM_PARALLEL,
+            "available_slots": max(0, OLLAMA_NUM_PARALLEL - active_total),
+            "slot_usage": f"{active_total}/{OLLAMA_NUM_PARALLEL}",
+            "active_by_model": by_model,
+            "phase": "decode" if any(item.phase == "decode" for item in active) else ("prefill" if active else "idle"),
+            "phase_by_model": phase_by_model,
+            "model_metrics": model_metrics,
+            "requests": requests,
+        }
+
+
+slot_tracker = SlotTracker()
+
+
 def build_upstream_url(path: str, query: str = "") -> str:
     upstream_url = f"{UPSTREAM_BASE}{path}"
     if query:
@@ -316,6 +423,7 @@ async def stream_openai_compatible_response(
     response_id: str,
     created: int,
     convert_chunk: Callable[[Dict[str, Any], str, int], Dict[str, Any]],
+    on_chunk: Callable[[Dict[str, Any]], Any] | None = None,
     on_close: Callable[[], Any] | None = None,
 ) -> StreamingResponse:
     async def gen():
@@ -325,6 +433,10 @@ async def stream_openai_compatible_response(
                     continue
 
                 data = json.loads(line)
+                if on_chunk:
+                    result = on_chunk(data)
+                    if asyncio.iscoroutine(result):
+                        await result
                 chunk = convert_chunk(data, response_id, created)
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
 
@@ -352,6 +464,7 @@ async def build_openai_response(
     response_id: str,
     created: int,
     convert_response: Callable[[Dict[str, Any], str, int], Dict[str, Any]],
+    on_data: Callable[[Dict[str, Any]], Any] | None = None,
 ) -> Response:
     try:
         body = await read_upstream_body(req, up)
@@ -360,6 +473,10 @@ async def build_openai_response(
 
     try:
         ollama_response = parse_upstream_json_object(body)
+        if on_data:
+            result = on_data(ollama_response)
+            if asyncio.iscoroutine(result):
+                await result
         openai_response = convert_response(ollama_response, response_id, created)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         raise HTTPException(status_code=502, detail="Bad gateway")
@@ -379,13 +496,13 @@ async def forward_openai_compatible(req: Request, task_id: str, route: OpenAICom
             raise HTTPException(status_code=400, detail=str(e))
 
         model = str(ollama_payload.get("model") or openai_payload.get("model") or "-")
-        await slot_tracker.begin(model)
+        slot_id = await slot_tracker.begin(model)
         slot_done = False
         async def end_slot_once() -> None:
             nonlocal slot_done
             if not slot_done:
                 slot_done = True
-                await slot_tracker.end(model)
+                await slot_tracker.end(slot_id)
 
         request = build_json_upstream_request(req, upstream_url, ollama_payload)
         stream_response_returned = False
@@ -408,6 +525,7 @@ async def forward_openai_compatible(req: Request, task_id: str, route: OpenAICom
                     response_id,
                     created,
                     route.convert_stream_chunk,
+                    lambda data: slot_tracker.update_from_ollama_chunk(slot_id, data),
                     end_slot_once,
                 )
 
@@ -419,6 +537,7 @@ async def forward_openai_compatible(req: Request, task_id: str, route: OpenAICom
                 response_id,
                 created,
                 route.convert_response,
+                lambda data: slot_tracker.update_from_ollama_chunk(slot_id, data),
             )
         finally:
             if not ollama_payload.get("stream") or not stream_response_returned:
@@ -453,9 +572,18 @@ COMPLETIONS_ROUTE = OpenAICompatRoute(
 # ---------------------------
 async def forward(req: Request, task_id: str) -> Response:
     upstream_url = build_upstream_url(req.url.path, str(req.url.query))
+    tracked_slot_id = ""
 
     try:
         raw_body = await req.body()
+        track_raw_generation = req.method == "POST" and req.url.path in {"/api/chat", "/api/generate"}
+        if track_raw_generation:
+            try:
+                raw_payload = parse_json_object(raw_body)
+                model = str(raw_payload.get("model") or "-")
+                tracked_slot_id = await slot_tracker.begin(model)
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                tracked_slot_id = ""
 
         request = app.state.http_client.build_request(
             method=req.method,
@@ -483,8 +611,13 @@ async def forward(req: Request, task_id: str) -> Response:
 
         try:
             body = await read_upstream_body(req, up)
+            if tracked_slot_id:
+                with suppress(json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                    await slot_tracker.update_from_ollama_chunk(tracked_slot_id, parse_upstream_json_object(body))
         finally:
             await up.aclose()
+            if tracked_slot_id:
+                await slot_tracker.end(tracked_slot_id)
 
         resp = Response(
             content=body,
@@ -496,8 +629,12 @@ async def forward(req: Request, task_id: str) -> Response:
         return resp
 
     except httpx.RequestError:
+        if tracked_slot_id:
+            await slot_tracker.end(tracked_slot_id)
         raise HTTPException(status_code=502, detail="Bad gateway")
     except ClientDisconnectError:
+        if tracked_slot_id:
+            await slot_tracker.end(tracked_slot_id)
         raise HTTPException(status_code=499, detail="Client disconnected")
 
 

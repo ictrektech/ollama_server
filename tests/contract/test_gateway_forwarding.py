@@ -106,8 +106,11 @@ class BlockingSendHttpClient(FakeHttpClient):
 class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_http_client = getattr(gateway.app.state, "http_client", None)
+        self.original_slot_tracker = gateway.slot_tracker
+        gateway.slot_tracker = gateway.SlotTracker()
 
     async def asyncTearDown(self):
+        gateway.slot_tracker = self.original_slot_tracker
         if self.original_http_client is None:
             try:
                 del gateway.app.state.http_client
@@ -376,6 +379,11 @@ class TestGatewayForwarding(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.create_task(consume_response())
         await asyncio.wait_for(fake_upstream.first_line_sent.wait(), timeout=1)
+        snapshot = await gateway.slot_tracker.snapshot()
+        self.assertEqual(snapshot["slot_usage"], "1/1")
+        self.assertEqual(snapshot["active_by_model"], {"qwen3:0.6b": 1})
+        self.assertEqual(snapshot["phase"], "decode")
+        self.assertEqual(snapshot["model_metrics"]["qwen3:0.6b"]["phase"], "decode")
         task.cancel()
 
         with self.assertRaises(asyncio.CancelledError):

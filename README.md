@@ -11,6 +11,7 @@
 - 根据上游响应自动区分普通 JSON 和 SSE 流式响应
 - Ollama 和 Gateway 在同一个镜像/容器中运行，外部只访问 Gateway 端口 `11535`
 - 增加 gateway 客户端手动中断检测，及时中断 Ollama 上游推理请求，节约算力
+- `/metrics` 提供经过 Gateway 的活跃槽位、prefill/decode 阶段和 token/s 指标，便于 Model Hub 展示运行状态
 - 可选向 Model Hub 注册自身管理接口，便于 Model Hub 查询版本、模型列表、运行状态并启动/停止模型
 
 ## 架构
@@ -91,6 +92,8 @@ curl http://localhost:11535/v1/chat/completions \
 ```
 
 `/v1/chat/completions` 会在 Gateway 内部转发到 Ollama `/api/chat`。OpenAI 常用参数会映射到 Ollama `options`，例如 `max_tokens` / `max_completion_tokens` -> `num_predict`；显式传入的 `options` 优先级更高。
+
+运行状态统计以 Gateway 为入口。通过 `http://<host>:11535/v1/chat/completions`、`/v1/completions`、`/api/chat` 或 `/api/generate` 发起的请求会计入 `/metrics` 的槽位；直接执行 `ollama run` 或直连 `11434` 会绕过 Gateway，无法被 `/metrics` 统计。
 
 文本补全同样支持请求级 `options`：
 
