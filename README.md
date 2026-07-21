@@ -191,28 +191,54 @@ Docker 相关文件集中在 `docker/`，容器启动和构建辅助脚本集中
 
 ### Dockerfile Profiles
 
-Dockerfile profile 只决定如何构建镜像，发布目标通过 `--target` 单独指定：
+Dockerfile profile 只决定如何构建镜像，发布目标通过 `--target` 单独指定。未显式传入
+`--target` 时，脚本根据 profile 和构建主机架构推导默认 target：
 
-| Profile | Description |
-|---------|-------------|
-| `Dockerfile` | 官方 Ollama 基础镜像，可用于多个平台 |
-| `Dockerfile_l4t` | Jetson (L4T) 设备 |
-| `Dockerfile_thor` | Thor (ARM + CUDA 13) 设备，支持 ghfast.top 镜像加速 |
-| `Dockerfile_cu128` | CUDA 12.8 |
+| Profile | 用途 | 默认 target |
+|---------|------|---------------|
+| `Dockerfile` | 官方 Ollama 基础镜像，可用于多个平台 | x86_64 为 `amd`；普通 ARM 为 `arm`；L4T 主机也为 `arm` |
+| `Dockerfile_l4t` | Jetson (L4T) 设备 | `l4t` |
+| `Dockerfile_thor` | Thor (ARM + CUDA 13) 设备，支持 GitHub 镜像加速 | `thor` |
+| `Dockerfile_cu128` | CUDA 12.8 | x86_64 为 `amd_cu128`；ARM 为 `arm_cu128` |
 
 `Dockerfile_cu128` 默认使用内部 ARM64 基础镜像
 `swr.cn-southwest-2.myhuaweicloud.com/ictrek-arm/cuda:12.8.1-runtime-ubuntu22.04`，
 并根据构建平台的 `TARGETARCH` 下载对应架构的 Ollama 包。
 如需构建其他架构，可通过 `CUDA_BASE_IMAGE=<image>` 覆盖该默认基础镜像。
 
-| Target | Feishu Sheet | Image Tag Prefix |
-|--------|---------------|------------------|
+| Target | 默认写入的飞书 Sheet | 镜像 Tag 前缀 |
+|--------|------------------------|-----------------|
 | `amd` | `AMD_with_cuda` | `amd` |
 | `arm` | `ARM_with_cuda`、`ARM_without_cuda`、`SOPHON_bm1688` | `arm` |
 | `l4t` | `l4t` | `l4t` |
-| `thor` | `thor_spark` | `thor` |
+| `thor` / `thor_spark` | `thor_spark` | `thor` |
 | `amd_cu128` | `AMD_with_cuda` | `amd_cu128` |
 | `arm_cu128` | `ARM_with_cuda`、`ARM_without_cuda`、`SOPHON_bm1688` | `arm_cu128` |
+
+可以重复传入 `--sheet-title`，或使用逗号分隔多个标题，覆盖 target 的默认 Sheet。例如只把
+ARM 通用镜像写入 `ARM_without_cuda`：
+
+```bash
+bash scripts/build_image.sh \
+  --profile Dockerfile \
+  --target arm \
+  --sheet-title ARM_without_cuda
+```
+
+### 飞书写入规则
+
+脚本仅在镜像成功推送到 SWR 后更新飞书，具体规则如下：
+
+1. 根据 Sheet 标题查询对应的 `sheet_id`，并依次处理所有目标 Sheet。
+2. 在第 1 行查找组件列，默认组件名为 `ollama_server`。如果不存在，则在最后一个已使用列后创建新列，第 1 行写组件名，第 2 行写 SWR 仓库地址。
+3. 在 `A4:A2000` 查找当天日期，格式为 `YYYYMMDD`。如果不存在，则在数据区顶部插入新行并把日期写入 `A4`。
+4. 在组件列和当天日期行的交叉单元格写入镜像 tag，格式为 `<tag-prefix>_<OLLAMA_VERSION>`，例如 `arm_0.32.0`。
+
+默认组件的完整镜像地址为：
+
+```text
+swr.cn-southwest-2.myhuaweicloud.com/ictrek/ollama_server:<tag-prefix>_<OLLAMA_VERSION>
+```
 
 飞书列名同时作为华为云 SWR 仓库名，飞书写入值与镜像 tag 保持一致。未设置
 `OLLAMA_TAG` 或设置为 `latest` 时，构建脚本会自动检测 Ollama 最新 release；GitHub
