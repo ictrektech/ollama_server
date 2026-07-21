@@ -867,6 +867,7 @@ else
   if [[ "$BUILDER" == "buildx" ]]; then
     docker buildx build \
       --load \
+      --provenance=false \
       "${PLATFORM_ARGS[@]}" \
       "${BUILD_ARGS[@]}" \
       -t "${IMAGE_URI}" \
