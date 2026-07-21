@@ -572,6 +572,22 @@ case "$PROFILE" in
 esac
 
 PUBLISH_TARGET="${PUBLISH_TARGET:-$DEFAULT_TARGET}"
+
+if [[ "$PROFILE" == "Dockerfile_cu128" ]]; then
+  case "$PUBLISH_TARGET" in
+    arm|arm_cu128)
+      PUBLISH_TARGET="arm_cu128"
+      ;;
+    amd|amd_cu128)
+      PUBLISH_TARGET="amd_cu128"
+      ;;
+    *)
+      err "Dockerfile_cu128 only supports arm/arm_cu128 or amd/amd_cu128 targets"
+      exit 1
+      ;;
+  esac
+fi
+
 if [[ ${#TARGET_SHEET_TITLES[@]} -eq 0 ]]; then
   TARGET_SHEET_TITLE="$(target_sheet_titles "$PUBLISH_TARGET")"
   read -ra TARGET_SHEET_TITLES <<< "$TARGET_SHEET_TITLE"
@@ -579,6 +595,11 @@ else
   TARGET_SHEET_TITLE="${TARGET_SHEET_TITLES[*]}"
 fi
 TAG_PREFIX="${TAG_PREFIX:-$(target_tag_prefix "$PUBLISH_TARGET")}"
+
+if [[ "$PROFILE" == "Dockerfile_cu128" && "$TAG_PREFIX" != "$(target_tag_prefix "$PUBLISH_TARGET")" ]]; then
+  err "Dockerfile_cu128 requires tag prefix '$(target_tag_prefix "$PUBLISH_TARGET")'"
+  exit 1
+fi
 
 if [[ ${#TARGET_SHEET_TITLES[@]} -eq 0 ]]; then
   err "No sheet configured for target '${PUBLISH_TARGET}'; use --sheet-title"

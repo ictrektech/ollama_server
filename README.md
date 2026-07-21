@@ -201,6 +201,11 @@ Dockerfile profile 只决定如何构建镜像，发布目标通过 `--target` �
 | `Dockerfile_thor` | Thor (ARM + CUDA 13) 设备，支持 GitHub 镜像加速 | `thor` |
 | `Dockerfile_cu128` | CUDA 12.8 | x86_64 为 `amd_cu128`；ARM 为 `arm_cu128` |
 
+`Dockerfile_cu128` 强制使用带 `_cu128` 的发布 target 和 tag 前缀：传入 `--target arm`
+会规范化为 `arm_cu128`，传入 `--target amd` 会规范化为 `amd_cu128`。因此镜像 tag 固定为
+`arm_cu128_<OLLAMA_VERSION>` 或 `amd_cu128_<OLLAMA_VERSION>`；不允许用 `--tag-prefix`
+覆盖为不带 `_cu128` 的前缀。
+
 `Dockerfile_cu128` 默认使用内部 ARM64 基础镜像
 `swr.cn-southwest-2.myhuaweicloud.com/ictrek-arm/cuda:12.8.1-runtime-ubuntu22.04`，
 并根据构建平台的 `TARGETARCH` 下载对应架构的 Ollama 包。
