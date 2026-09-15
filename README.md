@@ -1,11 +1,12 @@
 # Ollama OpenAI Gateway
 
-一个运行在 Ollama 前面的轻量 OpenAI 兼容网关。Gateway 保留 `X-Task-Id` 作为请求关联 ID，并将 `/v1/chat/completions` 转换为 Ollama 原生 `/api/chat`，让 OpenAI 风格请求也能使用 Ollama 原生请求级 `options`（例如 `options.num_ctx`）。其他 `/v1/*` 接口继续透传给 Ollama。
+一个运行在 Ollama 前面的轻量 OpenAI 兼容网关。Gateway 保留 `X-Task-Id` 作为请求关联 ID，并将 `/v1/chat/completions` 转换为 Ollama 原生 `/api/chat`，让 OpenAI 风格请求也能使用 Ollama 原生请求级 `options`（例如 `options.num_ctx`）。其他 `/v1/*` 接口继续透传给 Ollama，同时支持通过 Gateway 透传 Ollama 原生 `/api/*` 接口。
 
 ## 功能
 
 - OpenAI 风格 `/v1/chat/completions` 兼容 Ollama 原生 `/api/chat`，支持请求级 `options.num_ctx`
 - OpenAI 风格 `/v1/completions` 兼容 Ollama 原生 `/api/generate`，支持请求级 `options.num_ctx`
+- 通过 Gateway 端口 `11535` 透传 Ollama 原生 `/api/*` 接口，例如 `/api/version`、`/api/tags`、`/api/ps`、`/api/chat`、`/api/generate`
 - 透传其他 Ollama OpenAI 风格接口：`/v1/responses`、`/v1/models`、`/v1/embeddings`、`/v1/images/generations`
 - 支持客户端传入 `X-Task-Id`；未传入时自动生成并通过响应头返回
 - 根据上游响应自动区分普通 JSON 和 SSE 流式响应
