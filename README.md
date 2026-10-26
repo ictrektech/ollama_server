@@ -1,3 +1,5 @@
+> 当前 VOS 的 `ollama_server` 镜像由 `../ollama` 中的原生 Go 网关构建并发布，复用相同镜像仓库和飞书组件列。本目录 Python 实现保留作历史兼容，更新当前 VOS 镜像请使用 `../ollama/scripts/ictrek_release.sh` 和原生发布流水线。原生版两个端口均支持 `/v1/systemone`，模型须在 `/api/show` 实际声明 `decision`，如 `tev1:0.8b`；它不是 Jev 官方权重，不能当聊天模型使用。
+
 # Ollama OpenAI Gateway
 
 一个运行在 Ollama 前面的轻量 OpenAI 兼容网关。Gateway 保留 `X-Task-Id` 作为请求关联 ID，并将 `/v1/chat/completions` 转换为 Ollama 原生 `/api/chat`，让 OpenAI 风格请求也能使用 Ollama 原生请求级 `options`（例如 `options.num_ctx`）。其他 `/v1/*` 接口继续透传给 Ollama，同时支持通过 Gateway 透传 Ollama 原生 `/api/*` 接口。
